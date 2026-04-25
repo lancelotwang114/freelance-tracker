@@ -968,6 +968,9 @@ function toggleClientExpand(cid) {
 
 // 案件分頁年度展開
 function toggleYearExpand(y) {
+  // 清除提醒/業主排行帶來的鎖定篩選
+  state.filters.jobIdsOnly = null;
+  state.filters.jobIdsOnlyLabel = '';
   if (state.filters.expandedYear === y) {
     state.filters.expandedYear = null;
     if (state.filters.month?.startsWith(y)) state.filters.month = 'all';
@@ -979,6 +982,9 @@ function toggleYearExpand(y) {
 }
 
 function openCustomMonthFilter() {
+  // 清除提醒/業主排行帶來的鎖定篩選
+  state.filters.jobIdsOnly = null;
+  state.filters.jobIdsOnlyLabel = '';
   // 切換顯示 inline picker
   state.filters.month = 'custom-range';
   state.filters.expandedYear = null;
@@ -994,6 +1000,9 @@ function applyMonthRangeFromInputs() {
   const from = document.getElementById('filter-month-from')?.value;
   const to = document.getElementById('filter-month-to')?.value;
   if (!from || !to) return;
+  // 清除提醒/業主排行帶來的鎖定篩選
+  state.filters.jobIdsOnly = null;
+  state.filters.jobIdsOnlyLabel = '';
   state.filters.monthFrom = from <= to ? from : to;
   state.filters.monthTo = from <= to ? to : from;
   render();
@@ -2060,6 +2069,9 @@ function emptyState(title, sub) {
 
 // ============== Actions ==============
 function setFilter(key, value) {
+  // 切換任何篩選 → 自動清除提醒/業主排行帶來的鎖定篩選
+  state.filters.jobIdsOnly = null;
+  state.filters.jobIdsOnlyLabel = '';
   state.filters[key] = value;
   render();
 }
