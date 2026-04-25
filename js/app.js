@@ -10,7 +10,7 @@ const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14
 let state = {
   clients: [],
   jobs: [],
-  filters: { clientId: 'all', month: 'current', status: 'all', tag: 'all', expandedYear: null }
+  filters: { clientId: 'all', month: 'current', status: 'all', tag: 'all', expandedYear: null, jobIdsOnly: null, jobIdsOnlyLabel: '' }
 };
 
 let config = {
@@ -82,6 +82,9 @@ function load() {
   if (cfgRaw) {
     try { config = Object.assign(config, JSON.parse(cfgRaw)); } catch(e) {}
   }
+  // 強制：雲端優先 + 自動偵測永遠 ON（避免使用者誤關導致覆蓋）
+  config.cloudFirstMode = true;
+  config.autoPollEnabled = true;
   // 舊資料升級：確保每筆 job 都有 paid / doneAt / paidAt / cancelled / endDate / tag
   state.jobs = (state.jobs || []).map(j => ({
     ...j,
@@ -322,31 +325,8 @@ function bulkMarkDone() {
 
 function bulkMarkPaid() {
   if (!bulkSelected.size) { toast('沒有選任何案件'); return; }
-  // 讓使用者選收款日
-  const dateStr = prompt(
-    `將選中的 ${bulkSelected.size} 筆案件標記為「已收款」\n\n` +
-    `收款日期（YYYY-MM-DD），預設今日：`,
-    todayStr()
-  );
-  if (!dateStr) { toast('已取消'); return; }
-  // 簡單格式檢查
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
-    alert('日期格式錯誤，請用 YYYY-MM-DD');
-    return;
-  }
-  const useDate = dateStr.trim();
-  let n = 0;
-  state.jobs.forEach(j => {
-    if (bulkSelected.has(j.id) && !j.paid) {
-      j.paid = true;
-      j.paidAt = useDate;
-      // 解耦：批次標記收款不強制完成
-      n++;
-    }
-  });
-  bulkSelected.clear();
-  save(); render();
-  toast(`💰 ${n} 筆已標記收款 (${useDate})`, 3500);
+  // 用收款日期 modal（取代 prompt）
+  openPaidDateModal([...bulkSelected]);
 }
 
 function bulkDelete() {
@@ -366,8 +346,23 @@ let highlightJobIds = new Set();   // 提醒卡片點擊後要 highlight 的案�
 
 function setHighlightJobs(ids) {
   highlightJobIds = new Set(ids);
-  // 2.5 秒後清除
   setTimeout(() => { highlightJobIds = new Set(); }, 2600);
+}
+
+// 鎖定只顯示這些案件 id（用於提醒卡片點擊後精確篩選）
+function lockJobsToIds(ids, label) {
+  state.filters.jobIdsOnly = new Set(ids);
+  state.filters.jobIdsOnlyLabel = label || '提醒篩選';
+  state.filters.month = 'all';
+  state.filters.status = 'all';
+  state.filters.clientId = 'all';
+  state.filters.tag = 'all';
+}
+
+function clearJobsLock() {
+  state.filters.jobIdsOnly = null;
+  state.filters.jobIdsOnlyLabel = '';
+  render();
 }
 
 function computeAlerts() {
@@ -385,7 +380,7 @@ function computeAlerts() {
       icon: '🔴',
       title: `${overdue.length} 筆逾期未完成`,
       desc: `最早日期 ${overdue.map(j=>j.date).sort()[0]}　涉及金額 ${fmt(amt)}`,
-      onClick: () => { setHighlightJobs(overdue.map(j=>j.id)); setFilter('status','pending'); setFilter('month','all'); switchTab('jobs'); }
+      onClick: () => { lockJobsToIds(overdue.map(j=>j.id), `🔴 逾期未完成（${overdue.length} 筆）`); switchTab('jobs'); }
     });
   }
 
@@ -397,7 +392,7 @@ function computeAlerts() {
       icon: '🟡',
       title: `${dueSoon.length} 筆即將到期`,
       desc: `未來 3 天內要交件：${dueSoon.slice(0,2).map(j=>j.title).join('、')}${dueSoon.length>2?'…':''}`,
-      onClick: () => { setHighlightJobs(dueSoon.map(j=>j.id)); setFilter('status','pending'); setFilter('month','all'); switchTab('jobs'); }
+      onClick: () => { lockJobsToIds(dueSoon.map(j=>j.id), `🟡 未來 3 天到期（${dueSoon.length} 筆）`); switchTab('jobs'); }
     });
   }
 
@@ -420,7 +415,7 @@ function computeAlerts() {
       title: `${unpaidLong.length} 筆完成超過 ${config.unpaidRemindDays} 天未收款`,
       desc: clientsStr,
       amt: fmt(amt),
-      onClick: () => { setHighlightJobs(unpaidLong.map(j=>j.id)); setFilter('status','done-unpaid'); setFilter('month','all'); switchTab('jobs'); }
+      onClick: () => { lockJobsToIds(unpaidLong.map(j=>j.id), `🟠 完成超過 ${config.unpaidRemindDays} 天未收款（${unpaidLong.length} 筆）`); switchTab('jobs'); }
     });
   }
 
@@ -435,7 +430,7 @@ function computeAlerts() {
         icon: '📅',
         title: `月底將至，本月有 ${thisMonthUnpaid.length} 筆可請款`,
         desc: `可產生請款單寄給業主　共 ${fmt(amt)}`,
-        onClick: () => switchTab('invoice')
+        onClick: () => { lockJobsToIds(thisMonthUnpaid.map(j=>j.id), `📅 本月可請款（${thisMonthUnpaid.length} 筆）`); switchTab('jobs'); }
       });
     }
   }
@@ -742,12 +737,23 @@ function renderJobs() {
       '</div>'
     : '';
 
+  // 自訂範圍 inline picker
+  const customRangeUI = state.filters.month === 'custom-range'
+    ? '<div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 0 0 24px; font-size: 13px;">' +
+      '<span style="color: var(--muted);">範圍：</span>' +
+      `<input type="month" id="filter-month-from" value="${state.filters.monthFrom || ''}" onchange="applyMonthRangeFromInputs()" style="max-width: 140px;">` +
+      '<span style="color: var(--muted);">~</span>' +
+      `<input type="month" id="filter-month-to" value="${state.filters.monthTo || ''}" onchange="applyMonthRangeFromInputs()" style="max-width: 140px;">` +
+      '</div>'
+    : '';
+
   fb.innerHTML =
     '<div style="display: flex; flex-direction: column; gap: 4px; width: 100%;">' +
       '<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">' +
         '<span class="filter-bar-label">月份</span>' + yearChips +
       '</div>' +
       monthSubChips +
+      customRangeUI +
       '<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">' +
         '<span class="filter-bar-label">狀態</span>' +
         statusOptions.map(s => `<button class="chip ${state.filters.status===s.v?'active':''}" onclick="setFilter('status','${s.v}')">${s.label}</button>`).join('') +
@@ -767,6 +773,12 @@ function renderJobs() {
     '</div>';
 
   let jobs = [...state.jobs];
+
+  // 提醒卡片帶來的鎖定篩選（最高優先）
+  if (state.filters.jobIdsOnly) {
+    jobs = jobs.filter(j => state.filters.jobIdsOnly.has(j.id));
+  }
+
   const fm = state.filters.month;
   if (fm === 'current') jobs = jobs.filter(j => jobBelongMonth(j) === thisMonth());
   else if (fm === 'all') {/* 不過濾 */}
@@ -795,7 +807,15 @@ function renderJobs() {
   const paidTotal = activeInList.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const unpaidTotal = activeInList.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const cancelledCount = jobs.filter(j => j.cancelled).length;
-  container.innerHTML =
+  // 鎖定篩選 banner
+  const lockBanner = state.filters.jobIdsOnly
+    ? `<div style="padding: 8px 12px; background: var(--warning-light); border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; font-size: 13px;">
+        <span style="flex: 1;">📌 ${escapeHtml(state.filters.jobIdsOnlyLabel || '篩選中')}</span>
+        <button class="btn btn-outline btn-sm" onclick="clearJobsLock()">✕ 清除</button>
+       </div>`
+    : '';
+
+  container.innerHTML = lockBanner +
     `<div style="padding: 8px 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);">
        共 ${jobs.length} 筆${cancelledCount ? `（含 ${cancelledCount} 筆已取消）` : ''}　已收 <b style="color:var(--success)">${fmt(paidTotal)}</b>
        ${unpaidTotal ? `· 待收 <b style="color:var(--warning)">${fmt(unpaidTotal)}</b>` : ''}
@@ -959,18 +979,23 @@ function toggleYearExpand(y) {
 }
 
 function openCustomMonthFilter() {
-  const from = prompt('起始月份（YYYY-MM）', state.filters.monthFrom || thisMonth());
-  if (!from) return;
-  const to = prompt('結束月份（YYYY-MM）', state.filters.monthTo || thisMonth());
-  if (!to) return;
-  if (!/^\d{4}-\d{2}$/.test(from) || !/^\d{4}-\d{2}$/.test(to)) {
-    alert('格式錯誤，需要 YYYY-MM');
-    return;
-  }
+  // 切換顯示 inline picker
   state.filters.month = 'custom-range';
+  state.filters.expandedYear = null;
+  // 預設值
+  if (!state.filters.monthFrom) state.filters.monthFrom = thisMonth();
+  if (!state.filters.monthTo) state.filters.monthTo = thisMonth();
+  render();
+  // 等 render 後 focus 到 from
+  setTimeout(() => document.getElementById('filter-month-from')?.focus(), 50);
+}
+
+function applyMonthRangeFromInputs() {
+  const from = document.getElementById('filter-month-from')?.value;
+  const to = document.getElementById('filter-month-to')?.value;
+  if (!from || !to) return;
   state.filters.monthFrom = from <= to ? from : to;
   state.filters.monthTo = from <= to ? to : from;
-  state.filters.expandedYear = null;
   render();
 }
 
@@ -2011,11 +2036,62 @@ function toggleDone(id) {
 function togglePaid(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
   if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
-  // 解耦：收款不強制完成（儲值制可以先收錢後完成）
-  j.paid = !j.paid;
-  j.paidAt = j.paid ? todayStr() : null;
+  if (j.paid) {
+    // 取消收款：直接清除
+    j.paid = false;
+    j.paidAt = null;
+    save(); render();
+    toast('已改為待收款');
+  } else {
+    // 勾收款：跳日期 modal
+    openPaidDateModal([id]);
+  }
+}
+
+// ============== 收款日期 Modal ==============
+let paidDateContext = null;  // { jobIds: [...] }
+
+function openPaidDateModal(jobIds) {
+  if (!jobIds.length) return;
+  paidDateContext = { jobIds: [...jobIds] };
+  document.getElementById('paid-date-input').value = todayStr();
+  if (jobIds.length === 1) {
+    const j = state.jobs.find(x => x.id === jobIds[0]);
+    const c = j ? getClient(j.clientId) : null;
+    document.getElementById('paid-date-info').textContent =
+      `${c?.name || '?'} · ${j?.title || '(無標題)'} · ${fmt(+j?.amount||0)}`;
+  } else {
+    const total = state.jobs
+      .filter(j => jobIds.includes(j.id))
+      .reduce((s,j) => s + (+j.amount||0), 0);
+    document.getElementById('paid-date-info').textContent =
+      `批次標記 ${jobIds.length} 筆案件 · 合計 ${fmt(total)}`;
+  }
+  document.getElementById('paid-date-modal').classList.add('open');
+}
+
+function closePaidDateModal() {
+  document.getElementById('paid-date-modal').classList.remove('open');
+  paidDateContext = null;
+}
+
+function confirmPaidDate() {
+  if (!paidDateContext) return;
+  const dateStr = document.getElementById('paid-date-input').value;
+  if (!dateStr) { toast('請填收款日'); return; }
+  const ids = paidDateContext.jobIds;
+  let n = 0;
+  state.jobs.forEach(j => {
+    if (ids.includes(j.id) && !j.paid) {
+      j.paid = true;
+      j.paidAt = dateStr;
+      n++;
+    }
+  });
+  if (ids.length > 1) bulkSelected.clear();
+  closePaidDateModal();
   save(); render();
-  toast(j.paid?'💰 已標記收款':'已改為待收款');
+  toast(`💰 ${n} 筆已標記收款 (${dateStr})`, 3000);
 }
 
 // ----- Job Modal -----
@@ -2768,9 +2844,11 @@ function setSyncStatus(status, err) {
   const el = document.getElementById('sync-indicator');
   if (!el) return;
   const cfg = config.sheetConfig || {};
-  const verText = cfg.cloudVersion ? `v${cfg.cloudVersion}` : '';
-  const timeText = cfg.cloudLastModifiedAt
-    ? new Date(cfg.cloudLastModifiedAt).toLocaleTimeString('zh-TW', {hour: '2-digit', minute: '2-digit', hour12: false})
+  // 直接用日期+時間顯示，不用 hover
+  const dt = cfg.cloudLastModifiedAt ? new Date(cfg.cloudLastModifiedAt) : null;
+  const dtText = dt
+    ? `${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')} ` +
+      `${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`
     : '';
   const pendingNote = config.sheetPendingPush ? ' (待同步)' : '';
 
@@ -2784,7 +2862,7 @@ function setSyncStatus(status, err) {
       break;
     case 'synced':
       icon = '✓'; cls = 'synced';
-      text = verText && timeText ? `${verText} · ${timeText}` : '已同步';
+      text = dtText || '已同步';
       break;
     case 'offline':
       icon = '⚠'; cls = 'offline';
@@ -3241,8 +3319,7 @@ function loadSheetConfigUI() {
   if (!g('sheet-api')) return;
   g('sheet-api').value = config.sheetConfig?.apiUrl || '';
   g('sheet-url').value = config.sheetConfig?.sheetUrl || '';
-  if (g('cloud-first')) g('cloud-first').checked = !!config.cloudFirstMode;
-  if (g('auto-poll-toggle')) g('auto-poll-toggle').checked = config.autoPollEnabled !== false;
+  // 雲端優先 + 自動偵測已強制永久開啟，無 UI
 }
 
 function saveSheetConfig() {

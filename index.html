@@ -388,26 +388,8 @@
 
         <div class="section-divider"></div>
 
-        <div class="form-row">
-          <label>
-            ☁️ 雲端優先
-            <span class="form-row-desc">多裝置使用必開。啟動先下載雲端、操作前檢查版本，完全防止覆蓋。</span>
-          </label>
-          <label class="toggle">
-            <input type="checkbox" id="cloud-first" onchange="saveCloudFirstMode()">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-
-        <div class="form-row">
-          <label>
-            🔄 自動偵測雲端
-            <span class="form-row-desc">每 30 秒查雲端有沒有新版本，自動下載</span>
-          </label>
-          <label class="toggle">
-            <input type="checkbox" id="auto-poll-toggle" onchange="saveAutoPollToggle()">
-            <span class="toggle-slider"></span>
-          </label>
+        <div style="background: var(--success-light); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--success); margin-top: 4px;">
+          ☁️ <b>雲端優先</b> 與 <b>每 30 秒自動偵測</b> 已永久啟用，確保多裝置同步、不會被舊資料覆蓋。
         </div>
       </div>
     </div>
@@ -584,6 +566,20 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 收款日期 Modal -->
+<div class="modal-bg" id="paid-date-modal">
+  <div class="modal" style="max-width: 420px;">
+    <h2>💰 標記為已收款</h2>
+    <div id="paid-date-info" style="font-size: 14px; color: var(--muted); margin-bottom: 12px;"></div>
+    <label>收款日期</label>
+    <input type="date" id="paid-date-input">
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closePaidDateModal()">取消</button>
+      <button class="btn btn-primary" onclick="confirmPaidDate()">確認標記</button>
+    </div>
+  </div>
+</div>
 
 <!-- 備份歷史 Modal -->
 <div class="modal-bg" id="snapshot-modal">
