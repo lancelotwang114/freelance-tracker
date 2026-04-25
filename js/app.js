@@ -1482,9 +1482,12 @@ async function pullFromSheet(silent = false) {
 
 async function pushToSheet(silent = false) {
   const cfg = config.sheetConfig;
-  if (!cfg?.apiUrl || !cfg?.apiToken) return false;
-  if (!config.sheetSyncEnabled) return false;
-
+  if (!cfg?.apiUrl || !cfg?.apiToken) {
+    if (!silent) toast('請先設定 API URL + Token');
+    return false;
+  }
+  // 注意：sheetSyncEnabled 檢查只在 schedulePush（自動推送）時做，
+  // 手動按按鈕不受限制，方便使用者在「停用」狀態下也能手動操作
   setSyncStatus('syncing');
   try {
     const resp = await fetch(cfg.apiUrl, {
@@ -1517,6 +1520,8 @@ async function pushToSheet(silent = false) {
 }
 
 function schedulePush() {
+  // 只有「啟用自動同步」狀態下才會自動推
+  if (!config.sheetSyncEnabled) return;
   clearTimeout(syncTimer);
   setSyncStatus('syncing');
   syncTimer = setTimeout(() => pushToSheet(true), 2000);
