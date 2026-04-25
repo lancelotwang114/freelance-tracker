@@ -931,31 +931,26 @@ function setRevenueMode(mode) {
   renderRevenue();
 }
 
-// 動態產生範圍選單（依現有資料的年份）
+// 動態產生範圍選單
 function buildRangeOptions() {
   const rangeSel = document.getElementById('rev-range');
   if (!rangeSel) return;
-  // 從 jobs 中取得所有年份
-  const years = [...new Set(state.jobs.map(j => (j.date||'').slice(0,4)).filter(Boolean))].sort().reverse();
   let html = '';
   if (revenueState.mode === 'year') {
+    html += '<option value="ytd">📅 今年至今</option>';
     html += '<option value="3">最近 3 年</option>';
-    html += '<option value="5" selected>最近 5 年</option>';
-    html += '<option value="all">全部</option>';
+    html += '<option value="5">最近 5 年</option>';
+    html += '<option value="all" selected>全部</option>';
+    html += '<option disabled>──────────</option>';
     html += '<option value="custom">📌 自訂年份範圍</option>';
-    revenueState.range = '5';
+    revenueState.range = 'all';
   } else {
+    html += '<option value="3">最近 3 個月</option>';
     html += '<option value="6">最近 6 個月</option>';
     html += '<option value="12" selected>最近 12 個月</option>';
     html += '<option value="24">最近 24 個月</option>';
     html += '<option value="all">全部</option>';
-    if (years.length) {
-      html += '<optgroup label="特定年度">';
-      years.forEach(y => {
-        html += `<option value="year-${y}">📅 ${y} 年（整年）</option>`;
-      });
-      html += '</optgroup>';
-    }
+    html += '<option disabled>──────────</option>';
     html += '<option value="custom">📌 自訂月份範圍</option>';
     revenueState.range = '12';
   }
@@ -1045,6 +1040,10 @@ function renderRevenue() {
 
   if (r === 'all') {
     displayKeys = filled;
+  } else if (r === 'ytd') {
+    // 今年至今：年度模式才有此選項
+    const y = String(new Date().getFullYear());
+    displayKeys = filled.filter(k => k === y);
   } else if (r === 'custom') {
     // 自訂範圍
     if (revenueState.mode === 'month') {
@@ -1060,10 +1059,6 @@ function renderRevenue() {
       const hi = +from <= +to ? +to : +from;
       displayKeys = filled.filter(k => +k >= lo && +k <= hi);
     }
-  } else if (r.startsWith('year-')) {
-    // 整個年度（月度模式才有）
-    const y = r.slice(5);
-    displayKeys = filled.filter(k => k.startsWith(y + '-'));
   } else {
     // 數字 = 最近 N 個
     const n = +r;
@@ -1071,6 +1066,14 @@ function renderRevenue() {
   }
 
   const data = displayKeys.map(k => ({ label: k, ...buckets[k] }));
+
+  // 「今年至今」模式下，把今年的 label 標註「至今」
+  if (r === 'ytd' && revenueState.mode === 'year') {
+    const thisY = String(new Date().getFullYear());
+    data.forEach(d => {
+      if (d.label === thisY) d.label = `${thisY}（至今）`;
+    });
+  }
 
   // 標題
   const modeLabel = revenueState.mode === 'year' ? '年度' : '月度';

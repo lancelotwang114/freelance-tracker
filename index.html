@@ -126,8 +126,10 @@
           <button id="rev-mode-month" class="active" onclick="setRevenueMode('month')">📅 月度</button>
           <button id="rev-mode-year" onclick="setRevenueMode('year')">📊 年度</button>
         </div>
-        <select class="revenue-select" id="rev-client" onchange="renderRevenue()"></select>
+        <span class="rev-control-label">範圍</span>
         <select class="revenue-select" id="rev-range" onchange="onRangeChange()"></select>
+        <span class="rev-control-label">業主</span>
+        <select class="revenue-select" id="rev-client" onchange="renderRevenue()"></select>
       </div>
 
       <!-- 自訂範圍（月度模式）-->
