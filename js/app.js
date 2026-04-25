@@ -51,20 +51,8 @@ let config = {
 
   // 備份追蹤
   lastExportAt: null,
-  backupRemindDays: 14,  // 多久沒匯出就提醒
-
-  // LINE Notify（v0.4 接上後端後生效）
-  lineEnabled: false,
-  lineToken: '',
-  lineDailyTime: '09:00',
-  lineWeeklySummary: false,
-  lineNotifyToday: true,
-  lineNotifyOverdue: true,
-  lineNotifyDueSoon: true,
-  lineDueSoonDays: 3,
-  lineNotifyUnpaidLong: true,
-  lineNotifyMonthEnd: true,
-  lineMonthEndDay: 25
+  lastModifiedAt: null,    // 最後一次資料變動時間，用於匯入差異比對
+  backupRemindDays: 14
 };
 
 // 行事曆當前月份
@@ -87,10 +75,11 @@ function load() {
   if (cfgRaw) {
     try { config = Object.assign(config, JSON.parse(cfgRaw)); } catch(e) {}
   }
-  // 舊資料升級：確保每筆 job 都有 paid / doneAt / paidAt
+  // 舊資料升級：確保每筆 job 都有 paid / doneAt / paidAt / cancelled
   state.jobs = (state.jobs || []).map(j => ({
     ...j,
     paid: j.paid ?? false,
+    cancelled: j.cancelled ?? false,
     doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
     paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
   }));
@@ -106,6 +95,9 @@ function save() {
     clients: state.clients,
     jobs: state.jobs
   }));
+  // 記錄最後變動時間（給匯入差異比對用）
+  config.lastModifiedAt = new Date().toISOString();
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   // 若啟用 Sheet 同步 → debounce 觸發推送
   if (config.sheetSyncEnabled) {
     schedulePush();
@@ -145,9 +137,15 @@ function escapeHtml(s) {
 }
 
 function jobStatus(j) {
+  if (j.cancelled) return 'cancelled';
   if (j.paid) return 'paid';
   if (j.done) return 'done-unpaid';
   return 'pending';
+}
+
+// 用於統計：取消的案件不計入
+function activeJobs() {
+  return state.jobs.filter(j => !j.cancelled);
 }
 
 function getClient(cid) { return state.clients.find(c => c.id === cid); }
@@ -190,9 +188,10 @@ function computeAlerts() {
   const today = todayStr();
   const in3 = addDays(new Date(), 3);
   const alerts = [];
+  const active = activeJobs();  // 排除取消的案件
 
   // 1. 逾期未完成
-  const overdue = state.jobs.filter(j => !j.done && j.date && j.date < today);
+  const overdue = active.filter(j => !j.done && j.date && j.date < today);
   if (overdue.length) {
     const amt = overdue.reduce((s,j) => s + (+j.amount||0), 0);
     alerts.push({
@@ -205,7 +204,7 @@ function computeAlerts() {
   }
 
   // 2. 未來 3 天內到期（含今天）
-  const dueSoon = state.jobs.filter(j => !j.done && j.date && j.date >= today && j.date <= in3);
+  const dueSoon = active.filter(j => !j.done && j.date && j.date >= today && j.date <= in3);
   if (dueSoon.length) {
     alerts.push({
       type: 'due-soon',
@@ -218,7 +217,7 @@ function computeAlerts() {
 
   // 3. 已完成但超過 N 天未收款
   const threshold = addDays(new Date(), -config.unpaidRemindDays);
-  const unpaidLong = state.jobs.filter(j => j.done && !j.paid && j.doneAt && j.doneAt <= threshold);
+  const unpaidLong = active.filter(j => j.done && !j.paid && j.doneAt && j.doneAt <= threshold);
   if (unpaidLong.length) {
     const amt = unpaidLong.reduce((s,j) => s + (+j.amount||0), 0);
     // 依業主分組
@@ -242,7 +241,7 @@ function computeAlerts() {
   // 4. 月底提醒（每月 25 號後 + 有未收款的本月案件）
   const dom = new Date().getDate();
   if (dom >= 25) {
-    const thisMonthUnpaid = state.jobs.filter(j => j.done && !j.paid && getMonth(j.date) === thisMonth());
+    const thisMonthUnpaid = active.filter(j => j.done && !j.paid && getMonth(j.date) === thisMonth());
     if (thisMonthUnpaid.length) {
       const amt = thisMonthUnpaid.reduce((s,j) => s + (+j.amount||0), 0);
       alerts.push({
@@ -307,12 +306,13 @@ function renderBadge() {
 // ============== Dashboard ==============
 function renderDashboard() {
   const m = thisMonth();
-  const monthJobs = state.jobs.filter(j => getMonth(j.date) === m);
+  const active = activeJobs();
+  const monthJobs = active.filter(j => getMonth(j.date) === m);
   const paidAmt = monthJobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const unpaidAmt = monthJobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const pendingAmt = monthJobs.filter(j => !j.done).reduce((s,j) => s + (+j.amount||0), 0);
   const year = new Date().getFullYear();
-  const yearAmt = state.jobs.filter(j => j.paid && j.date && j.date.startsWith(year+'')).reduce((s,j) => s + (+j.amount||0), 0);
+  const yearAmt = active.filter(j => j.paid && j.date && j.date.startsWith(year+'')).reduce((s,j) => s + (+j.amount||0), 0);
 
   document.getElementById('stat-paid').textContent = fmt(paidAmt);
   document.getElementById('stat-paid-sub').textContent = monthJobs.filter(j=>j.paid).length + ' 筆';
@@ -331,7 +331,7 @@ function renderDashboard() {
 
   // 月度圖：改成最近 6 個「日曆月份」（空月顯示為 0）
   const byMonth = {};
-  state.jobs.forEach(j => {
+  active.forEach(j => {
     if (!j.date) return;
     const mm = getMonth(j.date);
     if (!byMonth[mm]) byMonth[mm] = { paid: 0, pending: 0 };
@@ -386,7 +386,7 @@ function renderYearComparison() {
   const byYear = {};
   let lastYearSamePeriod = 0;
 
-  state.jobs.forEach(j => {
+  activeJobs().forEach(j => {
     if (!j.paid || !j.date) return;
     const y = j.date.slice(0, 4);
     byYear[y] = (byYear[y] || 0) + (+j.amount||0);
@@ -457,6 +457,7 @@ function jobRow(j) {
   const color = c ? c.color : '#ccc';
   const name = c ? c.name : '未指定';
   const status = jobStatus(j);
+  const cancelBadge = j.cancelled ? '<span class="cancelled-badge">已取消</span>' : '';
   return `<div class="row state-${status}" onclick="editJob('${j.id}')">
     <div class="check-group" onclick="event.stopPropagation();">
       <div class="check-with-label" onclick="toggleDone('${j.id}')">
@@ -470,7 +471,7 @@ function jobRow(j) {
     </div>
     <div class="dot" style="background:${color}"></div>
     <div class="info">
-      <div class="title">${escapeHtml(j.title || '（無標題）')}</div>
+      <div class="title">${escapeHtml(j.title || '（無標題）')}${cancelBadge}</div>
       <div class="meta">${name} · ${j.date || '無日期'}</div>
     </div>
     <div class="amount">${fmt(+j.amount||0)}</div>
@@ -486,7 +487,8 @@ function renderJobs() {
     { v: 'all', label: '全部狀態' },
     { v: 'pending', label: '未完成' },
     { v: 'done-unpaid', label: '完成待收款' },
-    { v: 'paid', label: '已收款' }
+    { v: 'paid', label: '已收款' },
+    { v: 'cancelled', label: '🚫 已取消' }
   ];
   fb.innerHTML =
     '<span class="filter-bar-label">月份</span>' +
@@ -506,14 +508,17 @@ function renderJobs() {
 
   const container = document.getElementById('jobs-list');
   if (!jobs.length) { container.innerHTML = emptyState('沒有符合條件的案件', '換個篩選或新增一筆'); return; }
-  const total = jobs.reduce((s,j) => s + (+j.amount||0), 0);
-  const paidTotal = jobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const unpaidTotal = jobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  // 計算合計時排除取消案件
+  const activeInList = jobs.filter(j => !j.cancelled);
+  const total = activeInList.reduce((s,j) => s + (+j.amount||0), 0);
+  const paidTotal = activeInList.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  const unpaidTotal = activeInList.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  const cancelledCount = jobs.filter(j => j.cancelled).length;
   container.innerHTML =
     `<div style="padding: 8px 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);">
-       共 ${jobs.length} 筆　已收 <b style="color:var(--success)">${fmt(paidTotal)}</b>
+       共 ${jobs.length} 筆${cancelledCount ? `（含 ${cancelledCount} 筆已取消）` : ''}　已收 <b style="color:var(--success)">${fmt(paidTotal)}</b>
        ${unpaidTotal ? `· 待收 <b style="color:var(--warning)">${fmt(unpaidTotal)}</b>` : ''}
-       · 總計 ${fmt(total)}
+       · 計入統計 ${fmt(total)}
      </div>` +
     jobs.map(jobRow).join('');
 }
@@ -617,7 +622,7 @@ function renderClients() {
   const container = document.getElementById('clients-list');
   if (!state.clients.length) { container.innerHTML = emptyState('還沒有業主', '點右下角 + 新增第一個業主'); return; }
   container.innerHTML = state.clients.map(c => {
-    const clientJobs = state.jobs.filter(j => j.clientId === c.id);
+    const clientJobs = activeJobs().filter(j => j.clientId === c.id);
     const m = thisMonth();
     const mJobs = clientJobs.filter(j => getMonth(j.date) === m);
     const mPaid = mJobs.filter(j => j.paid).reduce((s,j)=>s+(+j.amount||0),0);
@@ -685,8 +690,8 @@ function renderRevenue() {
     revenueState.range = rangeSel.value === 'all' ? 'all' : +rangeSel.value;
   }
 
-  // 過濾業主
-  let jobs = [...state.jobs];
+  // 過濾業主，並排除取消的案件
+  let jobs = activeJobs();
   if (revenueState.clientId !== 'all') jobs = jobs.filter(j => j.clientId === revenueState.clientId);
 
   // 依模式分組
@@ -1004,7 +1009,8 @@ function drawInvoice() {
   const c = getClient(cid);
   const v = document.getElementById('invoice-view');
   if (!c) { v.innerHTML = '<div class="card empty">請先新增業主</div>'; return; }
-  const jobs = state.jobs.filter(j => j.clientId === cid && getMonth(j.date) === mm).sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  // 請款單排除取消的案件
+  const jobs = activeJobs().filter(j => j.clientId === cid && getMonth(j.date) === mm).sort((a,b) => (a.date||'').localeCompare(b.date||''));
   const paidTotal = jobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const unpaidTotal = jobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const pendingTotal = jobs.filter(j => !j.done).reduce((s,j) => s + (+j.amount||0), 0);
@@ -1093,6 +1099,7 @@ function setFilter(key, value) {
 
 function toggleDone(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
+  if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
   j.done = !j.done;
   j.doneAt = j.done ? todayStr() : null;
   // 取消完成 → 自動取消收款
@@ -1103,6 +1110,7 @@ function toggleDone(id) {
 
 function togglePaid(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
+  if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
   // 要收款必須先完成
   if (!j.paid && !j.done) {
     j.done = true;
@@ -1132,6 +1140,7 @@ function openJobModal() {
   document.getElementById('job-amount').value = '';
   document.getElementById('job-done').checked = false;
   document.getElementById('job-paid').checked = false;
+  document.getElementById('job-cancelled').checked = false;
   document.getElementById('job-modal').classList.add('open');
 }
 
@@ -1149,6 +1158,7 @@ function editJob(id) {
   document.getElementById('job-amount').value = j.amount || '';
   document.getElementById('job-done').checked = !!j.done;
   document.getElementById('job-paid').checked = !!j.paid;
+  document.getElementById('job-cancelled').checked = !!j.cancelled;
   document.getElementById('job-modal').classList.add('open');
 }
 
@@ -1160,6 +1170,7 @@ function closeJobModal() {
 function saveJob() {
   const isDone = document.getElementById('job-done').checked;
   const isPaid = document.getElementById('job-paid').checked;
+  const isCancelled = document.getElementById('job-cancelled').checked;
   const payload = {
     clientId: document.getElementById('job-client').value,
     date: document.getElementById('job-date').value,
@@ -1167,7 +1178,8 @@ function saveJob() {
     details: document.getElementById('job-details').value.trim(),
     amount: +document.getElementById('job-amount').value || 0,
     done: isDone || isPaid,  // 若打勾收款但沒勾完成，自動補上
-    paid: isPaid
+    paid: isPaid,
+    cancelled: isCancelled
   };
   if (!payload.title) { toast('請輸入案件名稱'); return; }
   if (editingJobId) {
@@ -1270,7 +1282,7 @@ function copyInvoiceText() {
   const cid = document.getElementById('inv-client').value;
   const mm = document.getElementById('inv-month').value;
   const c = getClient(cid); if (!c) return;
-  const jobs = state.jobs.filter(j => j.clientId === cid && getMonth(j.date) === mm).sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  const jobs = activeJobs().filter(j => j.clientId === cid && getMonth(j.date) === mm).sort((a,b) => (a.date||'').localeCompare(b.date||''));
   const paid = jobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const unpaid = jobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
   const txt = `${mm} ${c.name} 工作明細\n\n` +
@@ -1302,7 +1314,20 @@ function enterClientMode(cid) {
 
 // ============== Import / Export / Demo ==============
 function exportData() {
-  const blob = new Blob([JSON.stringify({clients: state.clients, jobs: state.jobs, config}, null, 2)], {type: 'application/json'});
+  const payload = {
+    _exportedAt: new Date().toISOString(),
+    _version: 'v0.4',
+    _counts: { clients: state.clients.length, jobs: state.jobs.length },
+    clients: state.clients,
+    jobs: state.jobs,
+    config: {
+      ...config,
+      // 不要把連線密碼一起匯出（匯出資料備份時）
+      sheetConfig: undefined,
+      calId: undefined
+    }
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `freelance-backup-${todayStr()}.json`;
@@ -1343,47 +1368,125 @@ function saveUserInfo() {
 }
 
 function renderBackupStatus() {
+  // 順便調整範例按鈕的安全提示
+  const demoBtn = document.getElementById('demo-btn');
+  if (demoBtn) {
+    if (state.clients.length > 0 || state.jobs.length > 0) {
+      demoBtn.textContent = '⚠️ 載入範例（會清空現有）';
+      demoBtn.classList.remove('btn-outline');
+      demoBtn.classList.add('btn-danger');
+    } else {
+      demoBtn.textContent = '載入範例資料';
+      demoBtn.classList.remove('btn-danger');
+      demoBtn.classList.add('btn-outline');
+    }
+  }
+
   const el = document.getElementById('backup-status');
   if (!el) return;
   const last = config.lastExportAt;
   if (!last) {
-    el.innerHTML = '<span style="color: var(--danger);">⚠️ 尚未匯出任何備份</span>';
+    el.textContent = '尚未備份';
+    el.style.color = 'var(--danger)';
   } else {
     const days = daysBetween(last, todayStr());
     if (days === 0) {
-      el.innerHTML = `<span style="color: var(--success);">✓ 今日已備份（${last}）</span>`;
+      el.textContent = '✓ 今日已備份';
+      el.style.color = 'var(--success)';
     } else if (days <= 7) {
-      el.innerHTML = `<span style="color: var(--success);">✓ ${days} 天前備份過（${last}）</span>`;
+      el.textContent = `${days} 天前備份過`;
+      el.style.color = 'var(--success)';
     } else if (days <= config.backupRemindDays) {
-      el.innerHTML = `<span style="color: var(--warning);">⏱️ ${days} 天前備份過（${last}）</span>`;
+      el.textContent = `${days} 天前備份過`;
+      el.style.color = 'var(--warning)';
     } else {
-      el.innerHTML = `<span style="color: var(--danger);">⚠️ 已超過 ${days} 天沒備份（上次 ${last}）</span>`;
+      el.textContent = `${days} 天沒備份`;
+      el.style.color = 'var(--danger)';
     }
   }
 }
 
 function importData(e) {
   const f = e.target.files[0]; if (!f) return;
+  e.target.value = '';
   const r = new FileReader();
   r.onload = () => {
     try {
       const d = JSON.parse(r.result);
-      if (!confirm(`將匯入 ${d.clients?.length||0} 位業主、${d.jobs?.length||0} 筆案件，會覆蓋現有資料。確定？`)) return;
+
+      // 驗證
+      if (!d.clients && !d.jobs) {
+        alert('這似乎不是資料備份檔（缺少 clients/jobs 欄位）。\n\n注意：「跨裝置設定檔」跟「資料備份檔」是不同的東西。');
+        return;
+      }
+
+      // 比對日期：哪份比較新？
+      const importedAt = d._exportedAt || null;
+      const localAt = config.lastModifiedAt || null;
+      const importedCnt = (d.clients?.length || 0) + (d.jobs?.length || 0);
+      const localCnt = state.clients.length + state.jobs.length;
+
+      let warningMsg = '';
+      if (importedAt && localAt) {
+        const importedDate = new Date(importedAt);
+        const localDate = new Date(localAt);
+        const diffMs = importedDate - localDate;
+        const diffDays = Math.round(Math.abs(diffMs) / 86400000);
+        if (diffMs > 0) {
+          warningMsg = `📅 匯入檔比較新（${diffDays} 天）\n• 匯入檔：${importedDate.toLocaleString('zh-TW')}\n• 現有資料：${localDate.toLocaleString('zh-TW')}\n\n建議：直接匯入。`;
+        } else if (diffMs < 0) {
+          warningMsg = `⚠️ 警告：現有資料比較新（${diffDays} 天）！\n• 匯入檔：${importedDate.toLocaleString('zh-TW')}\n• 現有資料：${localDate.toLocaleString('zh-TW')}\n\n建議：先匯出現有資料備份，確認真的要回到舊版本再匯入。`;
+        } else {
+          warningMsg = `兩份資料時間相同：${importedDate.toLocaleString('zh-TW')}`;
+        }
+      } else if (importedAt) {
+        warningMsg = `匯入檔：${new Date(importedAt).toLocaleString('zh-TW')}\n現有資料：（沒有時間記錄）`;
+      } else {
+        warningMsg = '⚠️ 匯入檔沒有時間戳（可能是舊版本檔案），無法判斷新舊';
+      }
+
+      const confirmMsg = `準備匯入：\n` +
+        `• 業主 ${d.clients?.length||0} 位（現有 ${state.clients.length} 位）\n` +
+        `• 案件 ${d.jobs?.length||0} 筆（現有 ${state.jobs.length} 筆）\n\n` +
+        warningMsg + `\n\n` +
+        `⚠️ 匯入會覆蓋現有資料。確定？`;
+
+      if (!confirm(confirmMsg)) return;
+
+      // 第二次確認（如果現有比新）
+      if (localAt && importedAt && new Date(localAt) > new Date(importedAt) && localCnt > 0) {
+        if (!confirm('再次確認：你的現有資料較新，匯入後會被舊版覆蓋。\n\n真的要繼續？')) return;
+      }
+
       state.clients = d.clients || [];
       state.jobs = (d.jobs || []).map(j => ({
         ...j,
         paid: j.paid ?? false,
+        cancelled: j.cancelled ?? false,
         doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
         paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
       }));
       save(); render(); toast('✓ 已匯入');
-    } catch(err) { alert('檔案格式錯誤'); }
+    } catch(err) {
+      alert('檔案格式錯誤：' + err.message);
+    }
   };
   r.readAsText(f);
 }
 
 function loadDemo() {
-  if (state.clients.length && !confirm('會覆蓋現有資料。確定？')) return;
+  // 已有資料時：兩次警告
+  if (state.clients.length > 0 || state.jobs.length > 0) {
+    const msg = `⚠️ 警告：載入範例資料會清空現有資料！\n\n` +
+      `現有：${state.clients.length} 位業主、${state.jobs.length} 筆案件\n\n` +
+      `如果你不確定，先按取消，到「💾 資料備份」匯出備份。\n\n確定要繼續？`;
+    if (!confirm(msg)) return;
+    const verify = prompt('最後確認：請輸入「載入範例」四個字才會執行（避免誤觸）');
+    if (verify !== '載入範例') {
+      toast('已取消（輸入文字不符）');
+      return;
+    }
+  }
   const c1 = uid(), c2 = uid(), c3 = uid();
   state.clients = [
     { id: c1, name: 'A 媒體公司', color: COLORS[0], note: '月結' },
@@ -1410,9 +1513,20 @@ function loadDemo() {
 }
 
 function clearAll() {
-  if (!confirm('確定要清空所有資料？無法復原。')) return;
+  const cnt = state.jobs.length;
+  if (cnt === 0 && state.clients.length === 0) {
+    toast('資料已經是空的');
+    return;
+  }
+  if (!confirm(`⚠️ 即將清空所有資料！\n\n業主：${state.clients.length} 位\n案件：${cnt} 筆\n\n操作不可復原。確定？`)) return;
+  // 二次確認：必須輸入「確認清空」
+  const verify = prompt('最後確認：請輸入「確認清空」四個字才會執行（避免誤觸）');
+  if (verify !== '確認清空') {
+    toast('已取消（輸入文字不符）');
+    return;
+  }
   state.clients = []; state.jobs = [];
-  save(); render(); toast('已清空');
+  save(); render(); toast('已清空全部資料');
 }
 
 // ============== 事件監聽 ==============
@@ -1526,16 +1640,22 @@ function setSyncStatus(status, err) {
   const el = document.getElementById('sync-indicator');
   if (!el) return;
   const map = {
-    idle:    { icon: '○',  text: '未啟用',    cls: 'idle' },
-    syncing: { icon: '⏳', text: '同步中',     cls: 'syncing' },
-    synced:  { icon: '✓',  text: '已同步',     cls: 'synced' },
-    offline: { icon: '⚠',  text: '離線',       cls: 'offline' },
-    error:   { icon: '✗',  text: '錯誤',       cls: 'error' }
+    idle:    { icon: '☁️',  text: '未連雲端',  cls: 'idle' },
+    syncing: { icon: '⏳',  text: '同步中',     cls: 'syncing' },
+    synced:  { icon: '✓',   text: '已同步',     cls: 'synced' },
+    offline: { icon: '⚠',   text: '沒網路',     cls: 'offline' },
+    error:   { icon: '✗',   text: '連線失敗',   cls: 'error' }
   };
   const s = map[status] || map.idle;
   el.className = `sync-indicator sync-${s.cls}`;
   el.innerHTML = `${s.icon} ${s.text}`;
   el.title = err ? `錯誤：${err}` : (config.sheetConfig?.lastSyncAt ? `上次同步：${config.sheetConfig.lastSyncAt}` : '尚未同步');
+}
+
+// 切換摺疊卡片
+function toggleCard(cardId) {
+  const card = document.getElementById(cardId);
+  if (card) card.classList.toggle('collapsed');
 }
 
 async function pullFromSheet(silent = false) {
@@ -1679,12 +1799,14 @@ function updateSheetSyncBadge() {
   if (!el) return;
   const cfg = config.sheetConfig;
   if (!cfg?.apiUrl) {
-    el.innerHTML = '<span style="color: var(--muted);">未設定 API URL</span>';
+    el.textContent = '未連接';
+    el.style.color = 'var(--muted)';
   } else if (!config.sheetSyncEnabled) {
-    el.innerHTML = '<span style="color: var(--muted);">同步已停用</span>';
+    el.textContent = '已關閉';
+    el.style.color = 'var(--muted)';
   } else {
-    const when = cfg.lastSyncAt ? new Date(cfg.lastSyncAt).toLocaleString('zh-TW') : '尚未';
-    el.innerHTML = `<span style="color: var(--success);">✓ 自動同步已啟用</span><br><span style="font-size: 11px; color: var(--muted);">上次推送：${when}</span>`;
+    el.textContent = '✓ 已連雲端';
+    el.style.color = 'var(--success)';
   }
 }
 
@@ -1782,10 +1904,13 @@ function updateCalendarStatusBadge() {
   if (!badge) return;
   if (!config.calId) {
     badge.textContent = '未設定';
+    badge.style.color = 'var(--muted)';
   } else if (!config.calEnabled) {
-    badge.textContent = '已停用';
+    badge.textContent = '已關閉';
+    badge.style.color = 'var(--muted)';
   } else {
-    badge.textContent = '✓ 已啟用';
+    badge.textContent = '✓ 同步中';
+    badge.style.color = 'var(--success)';
   }
 }
 
@@ -1888,181 +2013,57 @@ async function syncCalendarNow() {
   }
 }
 
-// ============== LINE（已停用）==============
-function loadLineConfigUI() {
-  // LINE Notify 已停用 - 此函式保留避免 init 出錯
-  const g = (id) => document.getElementById(id);
-  if (!g('line-enabled')) return;
-  g('line-enabled').checked = !!config.lineEnabled;
-  g('line-token').value = config.lineToken || '';
-  g('line-daily-time').value = config.lineDailyTime || '09:00';
-  g('line-weekly').checked = !!config.lineWeeklySummary;
-  g('line-notify-today').checked = config.lineNotifyToday !== false;
-  document.getElementById('line-notify-overdue').checked = config.lineNotifyOverdue !== false;
-  document.getElementById('line-notify-duesoon').checked = config.lineNotifyDueSoon !== false;
-  document.getElementById('line-duesoon-days').value = config.lineDueSoonDays || 3;
-  document.getElementById('line-notify-unpaid').checked = config.lineNotifyUnpaidLong !== false;
-  document.getElementById('line-notify-monthend').checked = config.lineNotifyMonthEnd !== false;
-  document.getElementById('line-monthend-day').value = config.lineMonthEndDay || 25;
-  updateLineStatusBadge();
-}
+// ============== 自動儲存（設定頁的 input 失焦自動存）==============
+function setupAutoSave() {
+  // 我的資料：6 個欄位 + 1 個 textarea
+  ['me-name', 'me-phone', 'me-email', 'me-title', 'me-bank', 'me-account', 'me-note'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('blur', () => {
+      // 自動觸發儲存（不顯示 toast，靜默）
+      if (typeof saveUserInfo === 'function') {
+        config.userInfo = config.userInfo || {};
+        config.userInfo[id.replace('me-', '').replace('title', 'invoiceTitle').replace('account', 'account')] = el.value.trim();
+        // 統一用 saveUserInfo 比較簡單
+        const tmpToast = window.toast;
+        window.toast = () => {};  // 暫時關掉 toast
+        saveUserInfo();
+        window.toast = tmpToast;
+      }
+    });
+  });
 
-function updateLineStatusBadge() {
-  const badge = document.getElementById('line-status-badge');
-  if (!config.lineToken) {
-    badge.textContent = '未設定';
-    badge.style.background = 'rgba(255,255,255,0.2)';
-  } else if (!config.lineEnabled) {
-    badge.textContent = '已停用';
-    badge.style.background = 'rgba(255,255,255,0.3)';
-  } else {
-    badge.textContent = '✓ 已啟用（等 v0.3 後端）';
-    badge.style.background = 'rgba(255,255,255,0.4)';
-  }
-}
+  // 提醒設定
+  const unpaidEl = document.getElementById('cfg-unpaid-days-input');
+  if (unpaidEl) unpaidEl.addEventListener('blur', () => {
+    const tmpToast = window.toast;
+    window.toast = () => {};
+    saveConfig();
+    window.toast = tmpToast;
+  });
 
-function saveLineConfig() {
-  config.lineEnabled = document.getElementById('line-enabled').checked;
-  config.lineToken = document.getElementById('line-token').value.trim();
-  config.lineDailyTime = document.getElementById('line-daily-time').value;
-  config.lineWeeklySummary = document.getElementById('line-weekly').checked;
-  config.lineNotifyToday = document.getElementById('line-notify-today').checked;
-  config.lineNotifyOverdue = document.getElementById('line-notify-overdue').checked;
-  config.lineNotifyDueSoon = document.getElementById('line-notify-duesoon').checked;
-  config.lineDueSoonDays = Math.max(1, Math.min(14, +document.getElementById('line-duesoon-days').value || 3));
-  config.lineNotifyUnpaidLong = document.getElementById('line-notify-unpaid').checked;
-  config.lineNotifyMonthEnd = document.getElementById('line-notify-monthend').checked;
-  config.lineMonthEndDay = Math.max(1, Math.min(31, +document.getElementById('line-monthend-day').value || 25));
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-  updateLineStatusBadge();
-  toast('✓ 已儲存 LINE 設定');
-}
+  // Sheet 設定
+  ['sheet-api', 'sheet-url'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('blur', () => {
+      const tmpToast = window.toast;
+      window.toast = () => {};
+      saveSheetConfig();
+      window.toast = tmpToast;
+    });
+  });
 
-function toggleTokenVisibility() {
-  const input = document.getElementById('line-token');
-  input.type = input.type === 'password' ? 'text' : 'password';
-}
-
-function sendTestNotification() {
-  if (!config.lineToken) {
-    toast('請先填入 LINE Notify Token');
-    return;
-  }
-  alert(
-    '🚧 尚未連接後端\n\n' +
-    '要真的發送 LINE 訊息需要 Google Apps Script 當後端定時任務，' +
-    '這是 v0.3 的工作項目。\n\n' +
-    '目前你可以先：\n' +
-    '1. 把 Token 和偏好設定填好（會存著）\n' +
-    '2. 按「預覽訊息」看每天會收到什麼樣的訊息\n' +
-    '3. 等 v0.3 Apps Script 做完後，會自動用這些設定啟動推播'
-  );
-}
-
-// 產生會推播的 LINE 訊息內容（依目前資料）
-function buildLineMessage() {
-  const lines = [];
-  const today = todayStr();
-  const now = new Date();
-  const timeStr = now.toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' });
-  lines.push(`☀️ 早安！${timeStr}`);
-  lines.push('');
-
-  // 1. 今日排程
-  if (config.lineNotifyToday) {
-    const todayJobs = state.jobs.filter(j => !j.done && j.date === today);
-    if (todayJobs.length) {
-      lines.push(`📅 今日排程（${todayJobs.length} 筆）：`);
-      todayJobs.forEach(j => {
-        const c = getClient(j.clientId);
-        lines.push(`・${c?c.name:'未指定'} - ${j.title} ${fmt(+j.amount||0)}`);
-      });
-      lines.push('');
-    }
-  }
-
-  // 2. 逾期未完成
-  if (config.lineNotifyOverdue) {
-    const overdue = state.jobs.filter(j => !j.done && j.date && j.date < today);
-    if (overdue.length) {
-      lines.push(`🔴 逾期未完成（${overdue.length} 筆）：`);
-      overdue.forEach(j => {
-        const days = daysBetween(j.date, today);
-        lines.push(`・${j.title} (超過 ${days} 天)`);
-      });
-      lines.push('');
-    }
-  }
-
-  // 3. 即將到期
-  if (config.lineNotifyDueSoon) {
-    const until = addDays(new Date(), config.lineDueSoonDays);
-    const soon = state.jobs.filter(j => !j.done && j.date > today && j.date <= until);
-    if (soon.length) {
-      lines.push(`🟡 未來 ${config.lineDueSoonDays} 天到期：`);
-      soon.forEach(j => {
-        lines.push(`・${j.date.slice(5)} ${j.title}`);
-      });
-      lines.push('');
-    }
-  }
-
-  // 4. 待收款過久
-  if (config.lineNotifyUnpaidLong) {
-    const threshold = addDays(new Date(), -config.unpaidRemindDays);
-    const unpaid = state.jobs.filter(j => j.done && !j.paid && j.doneAt && j.doneAt <= threshold);
-    if (unpaid.length) {
-      const byClient = {};
-      unpaid.forEach(j => {
-        const c = getClient(j.clientId);
-        const name = c ? c.name : '未指定';
-        if (!byClient[name]) byClient[name] = { amt: 0, cnt: 0 };
-        byClient[name].amt += (+j.amount||0);
-        byClient[name].cnt += 1;
-      });
-      lines.push(`💰 待收款（完成 > ${config.unpaidRemindDays} 天）：`);
-      Object.entries(byClient).forEach(([name, d]) => {
-        lines.push(`・${name} ${fmt(d.amt)} (${d.cnt} 筆)`);
-      });
-      const total = unpaid.reduce((s,j) => s + (+j.amount||0), 0);
-      lines.push(`　合計 ${fmt(total)}`);
-      lines.push('');
-    }
-  }
-
-  // 5. 月底提醒
-  if (config.lineNotifyMonthEnd && now.getDate() >= config.lineMonthEndDay) {
-    const mm = thisMonth();
-    const monthUnpaid = state.jobs.filter(j => j.done && !j.paid && getMonth(j.date) === mm);
-    if (monthUnpaid.length) {
-      const amt = monthUnpaid.reduce((s,j) => s + (+j.amount||0), 0);
-      lines.push(`📨 月底將至！本月可請款：`);
-      lines.push(`　${monthUnpaid.length} 筆　共 ${fmt(amt)}`);
-      lines.push(`　→ 記得產生請款單寄給業主`);
-      lines.push('');
-    }
-  }
-
-  if (lines.length <= 2) {
-    lines.push('🎉 今天沒有待辦，繼續保持！');
-  }
-
-  return lines.join('\n').trim();
-}
-
-function previewLineMessage() {
-  const msg = buildLineMessage();
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
-  document.getElementById('line-preview-body').innerHTML = `
-    <div class="line-msg-time">${timeStr}</div>
-    <div class="line-msg-bubble">${escapeHtml(msg)}</div>
-  `;
-  document.getElementById('line-preview-modal').classList.add('open');
-}
-
-function closeLinePreview() {
-  document.getElementById('line-preview-modal').classList.remove('open');
+  // Calendar 設定
+  const calIdEl = document.getElementById('cal-id');
+  if (calIdEl) calIdEl.addEventListener('blur', () => {
+    const tmpToast = window.toast;
+    window.toast = () => {};
+    saveCalendarConfig();
+    window.toast = tmpToast;
+  });
+  const calEnabledEl = document.getElementById('cal-enabled');
+  if (calEnabledEl) calEnabledEl.addEventListener('change', () => saveCalendarConfig());
+  const calAutoEl = document.getElementById('cal-autosync');
+  if (calAutoEl) calAutoEl.addEventListener('change', () => saveCalendarConfig());
 }
 
 // ============== Init ==============
@@ -2072,8 +2073,8 @@ document.getElementById('cfg-unpaid-days-input').value = config.unpaidRemindDays
 loadUserInfoUI();
 loadSheetConfigUI();
 loadCalendarConfigUI();
-loadLineConfigUI();
 updateSheetSyncBadge();
+setupAutoSave();
 render();
 
 // 啟動時若同步已啟用，自動從 Sheet 拉取最新資料

@@ -169,6 +169,45 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 .row.state-paid .title { color: var(--muted); }
 .row.state-paid .amount { color: var(--success); }
 
+/* 已取消 */
+.row.state-cancelled { opacity: 0.6; }
+.row.state-cancelled .title,
+.row.state-cancelled .meta {
+  text-decoration: line-through;
+  color: var(--muted);
+  font-style: italic;
+}
+.row.state-cancelled .amount {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.row.state-cancelled .check-group { opacity: 0.3; pointer-events: none; }
+.cancelled-badge {
+  display: inline-block;
+  background: var(--danger-light);
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* 行事曆 cancelled chip */
+.cal-chip.cancelled {
+  opacity: 0.35;
+  text-decoration: line-through;
+  background: var(--muted) !important;
+}
+
+/* Modal 取消開關（紅色強調） */
+.checkbox-row.danger-checkbox {
+  background: var(--danger-light);
+  border: 1px dashed var(--danger);
+}
+.checkbox-row.danger-checkbox span { color: var(--danger); font-weight: 600; }
+
 /* ==================== Double Check Buttons ==================== */
 .check-group {
   display: flex;
@@ -894,6 +933,12 @@ input:focus, select:focus, textarea:focus {
   gap: 12px;
 }
 .my-info-grid > div { min-width: 0; }
+@media (max-width: 540px) {
+  .my-info-grid {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
 
 /* ==================== Invoice header with user info ==================== */
 .invoice-from {
@@ -937,6 +982,54 @@ input:focus, select:focus, textarea:focus {
 /* ==================== Alert: backup reminder ==================== */
 .alert.type-backup { background: #faf5ff; border-left: 4px solid #a855f7; }
 .alert.type-sheet-prompt { background: #ecfeff; border-left: 4px solid #06b6d4; }
+
+/* ==================== 設定頁分類 + 摺疊 ==================== */
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 18px 4px 8px 4px;
+  padding-bottom: 4px;
+  border-bottom: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card.collapsible > .card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  margin: -16px -16px 0 -16px;
+  padding: 14px 16px;
+  border-radius: 12px 12px 0 0;
+  transition: background .15s;
+}
+.card.collapsible > .card-head:hover { background: var(--bg); }
+.card.collapsible > .card-head h3 { margin: 0; flex: 1; font-size: 15px; }
+.card.collapsible > .card-head .toggle-arrow {
+  font-size: 14px;
+  color: var(--muted);
+  transition: transform .2s;
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+.card.collapsible.collapsed > .card-head { margin-bottom: -16px; }
+.card.collapsible.collapsed > .card-head .toggle-arrow { transform: rotate(-90deg); }
+.card.collapsible.collapsed > .card-body { display: none; }
+.card.collapsible > .card-body { padding-top: 12px; }
+.card-head .card-status {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
 
 /* ==================== Sync Indicator ==================== */
 .sync-indicator {
