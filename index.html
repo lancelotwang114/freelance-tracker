@@ -299,9 +299,10 @@
           建議每週匯出一次資料備份檔，存雲端硬碟。
         </p>
         <div style="display:flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn-primary btn-sm" onclick="exportData()">📤 匯出資料備份</button>
+          <button class="btn btn-primary btn-sm" onclick="exportData()">📤 匯出 JSON 備份</button>
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('import-file').click()">📥 匯入備份</button>
           <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)">
+          <button class="btn btn-outline btn-sm" onclick="exportCSV()">📊 匯出 CSV（做帳用）</button>
         </div>
         <div class="section-divider"></div>
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">⚠️ 危險操作：</p>
@@ -411,10 +412,25 @@
     <h2 id="job-modal-title">新增案件</h2>
     <label>業主</label>
     <select id="job-client"></select>
-    <label>日期</label>
-    <input type="date" id="job-date">
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+      <div>
+        <label>開始日期</label>
+        <input type="date" id="job-date">
+      </div>
+      <div>
+        <label>截止日（選填）</label>
+        <input type="date" id="job-end-date" placeholder="跨天案件才填">
+      </div>
+    </div>
+
     <label>案件名稱</label>
     <input type="text" id="job-title" placeholder="例：首頁 banner 設計">
+
+    <label>類型 / 標籤（選填）<span style="color: var(--muted); font-size: 12px; font-weight: 400;">　例：廣告、設計、動畫</span></label>
+    <input type="text" id="job-tag" placeholder="自由輸入" list="tag-suggestions">
+    <datalist id="tag-suggestions"></datalist>
+
     <label>細項說明（業主看得到）</label>
     <textarea id="job-details" placeholder="例：1280x400 banner x 2 張，含兩次修改"></textarea>
     <label>金額</label>
@@ -451,6 +467,26 @@
     <div id="color-picker" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
     <label>備註（例：聯絡人、匯款帳號等）</label>
     <textarea id="client-note"></textarea>
+
+    <div class="section-divider"></div>
+
+    <h3 style="font-size: 14px; margin-bottom: 8px;">💰 介紹人 / 分潤設定（選填）</h3>
+    <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+      若這個業主是透過介紹人接洽、需給介紹人抽成，填這裡。統計時會自動計算「實收金額」。
+    </p>
+    <div style="display: grid; grid-template-columns: 1fr 100px; gap: 8px;">
+      <div>
+        <label>介紹人</label>
+        <select id="client-commission-to">
+          <option value="">— 無 —</option>
+        </select>
+      </div>
+      <div>
+        <label>抽成 %</label>
+        <input type="number" id="client-commission-rate" min="0" max="100" step="0.5" placeholder="0">
+      </div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeClientModal()">取消</button>
       <button class="btn btn-danger hidden" id="client-delete-btn" onclick="deleteClient()">刪除</button>

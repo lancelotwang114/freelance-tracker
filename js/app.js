@@ -14,7 +14,7 @@ const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14
 let state = {
   clients: [],
   jobs: [],
-  filters: { clientId: 'all', month: 'current', status: 'all' }
+  filters: { clientId: 'all', month: 'current', status: 'all', tag: 'all' }
 };
 
 let config = {
@@ -78,13 +78,22 @@ function load() {
   if (cfgRaw) {
     try { config = Object.assign(config, JSON.parse(cfgRaw)); } catch(e) {}
   }
-  // 舊資料升級：確保每筆 job 都有 paid / doneAt / paidAt / cancelled
+  // 舊資料升級：確保每筆 job 都有 paid / doneAt / paidAt / cancelled / endDate / tag
   state.jobs = (state.jobs || []).map(j => ({
     ...j,
     paid: j.paid ?? false,
     cancelled: j.cancelled ?? false,
+    endDate: j.endDate ?? null,
+    tag: j.tag ?? '',
     doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
     paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
+  }));
+
+  // 業主 schema migration
+  state.clients = (state.clients || []).map(c => ({
+    ...c,
+    commissionRate: c.commissionRate ?? 0,
+    commissionTo: c.commissionTo ?? ''
   }));
 
   // 若網址帶 ?client=xxx，進入業主唯讀模式
@@ -149,6 +158,34 @@ function jobStatus(j) {
 // 用於統計：取消的案件不計入
 function activeJobs() {
   return state.jobs.filter(j => !j.cancelled);
+}
+
+// 案件的「歸屬月」：endDate 優先，沒有就用 date
+function jobBelongMonth(j) {
+  return getMonth(j.endDate || j.date);
+}
+
+// 案件的「實收金額」：扣掉業主分潤（給介紹人的部分）
+function jobNetAmount(j) {
+  const c = getClient(j.clientId);
+  const rate = (c && c.commissionRate) || 0;
+  if (rate <= 0) return +j.amount || 0;
+  return Math.round((+j.amount || 0) * (1 - rate / 100));
+}
+
+// 案件的分潤金額（給介紹人的）
+function jobCommission(j) {
+  const c = getClient(j.clientId);
+  const rate = (c && c.commissionRate) || 0;
+  if (rate <= 0) return 0;
+  return (+j.amount || 0) - jobNetAmount(j);
+}
+
+// 已用過的標籤清單（補全用）
+function getUsedTags() {
+  const tags = new Set();
+  state.jobs.forEach(j => { if (j.tag) tags.add(j.tag); });
+  return [...tags].sort();
 }
 
 function getClient(cid) { return state.clients.find(c => c.id === cid); }
@@ -552,6 +589,16 @@ function jobRow(j) {
   const name = c ? c.name : '未指定';
   const status = jobStatus(j);
   const cancelBadge = j.cancelled ? '<span class="cancelled-badge">已取消</span>' : '';
+  // 截止日 badge
+  let dueBadge = '';
+  if (j.endDate && j.endDate !== j.date) {
+    const today = todayStr();
+    const isUrgent = !j.done && j.endDate < addDays(new Date(), 3);
+    const isOverdue = !j.done && j.endDate < today;
+    const cls = isOverdue || isUrgent ? 'urgent' : '';
+    dueBadge = `<span class="due-badge ${cls}">截止 ${j.endDate.slice(5)}</span>`;
+  }
+  const tagBadge = j.tag ? `<span class="tag-badge">${escapeHtml(j.tag)}</span>` : '';
   const hl = highlightJobIds.has(j.id) ? ' highlight' : '';
   const isSelected = bulkSelected.has(j.id);
   const selCls = isSelected ? ' selected' : '';
@@ -562,7 +609,7 @@ function jobRow(j) {
       <div class="bulk-checkbox ${isSelected?'checked':''}"></div>
       <div class="dot" style="background:${color}"></div>
       <div class="info">
-        <div class="title">${escapeHtml(j.title || '（無標題）')}${cancelBadge}</div>
+        <div class="title">${escapeHtml(j.title || '（無標題）')}${tagBadge}${dueBadge}${cancelBadge}</div>
         <div class="meta">${name} · ${j.date || '無日期'}</div>
       </div>
       <div class="amount">${fmt(+j.amount||0)}</div>
@@ -582,7 +629,7 @@ function jobRow(j) {
     </div>
     <div class="dot" style="background:${color}"></div>
     <div class="info">
-      <div class="title">${escapeHtml(j.title || '（無標題）')}${cancelBadge}</div>
+      <div class="title">${escapeHtml(j.title || '（無標題）')}${tagBadge}${dueBadge}${cancelBadge}</div>
       <div class="meta">${name} · ${j.date || '無日期'}</div>
     </div>
     <div class="amount">${fmt(+j.amount||0)}</div>
@@ -601,6 +648,7 @@ function renderJobs() {
     { v: 'paid', label: '已收款' },
     { v: 'cancelled', label: '🚫 已取消' }
   ];
+  const usedTags = getUsedTags();
   fb.innerHTML =
     '<span class="filter-bar-label">月份</span>' +
     months.map(m => `<button class="chip ${state.filters.month===m?'active':''}" onclick="setFilter('month','${m}')">${monthLabels[m]||m}</button>`).join('') +
@@ -608,13 +656,18 @@ function renderJobs() {
     statusOptions.map(s => `<button class="chip ${state.filters.status===s.v?'active':''}" onclick="setFilter('status','${s.v}')">${s.label}</button>`).join('') +
     '<span class="filter-bar-label" style="margin-left: 6px;">業主</span>' +
     `<button class="chip ${state.filters.clientId==='all'?'active':''}" onclick="setFilter('clientId','all')">全部</button>` +
-    state.clients.map(c => `<button class="chip ${state.filters.clientId===c.id?'active':''}" onclick="setFilter('clientId','${c.id}')" style="${state.filters.clientId===c.id?'':'border-left: 3px solid '+c.color+';'}">${escapeHtml(c.name)}</button>`).join('');
+    state.clients.map(c => `<button class="chip ${state.filters.clientId===c.id?'active':''}" onclick="setFilter('clientId','${c.id}')" style="${state.filters.clientId===c.id?'':'border-left: 3px solid '+c.color+';'}">${escapeHtml(c.name)}</button>`).join('') +
+    (usedTags.length ? '<span class="filter-bar-label" style="margin-left: 6px;">類型</span>' +
+      `<button class="chip ${state.filters.tag==='all'?'active':''}" onclick="setFilter('tag','all')">全部</button>` +
+      usedTags.map(t => `<button class="chip ${state.filters.tag===t?'active':''}" onclick="setFilter('tag','${escapeHtml(t)}')">${escapeHtml(t)}</button>`).join('')
+    : '');
 
   let jobs = [...state.jobs];
-  if (state.filters.month === 'current') jobs = jobs.filter(j => getMonth(j.date) === thisMonth());
-  else if (state.filters.month !== 'all') jobs = jobs.filter(j => getMonth(j.date) === state.filters.month);
+  if (state.filters.month === 'current') jobs = jobs.filter(j => jobBelongMonth(j) === thisMonth());
+  else if (state.filters.month !== 'all') jobs = jobs.filter(j => jobBelongMonth(j) === state.filters.month);
   if (state.filters.clientId !== 'all') jobs = jobs.filter(j => j.clientId === state.filters.clientId);
   if (state.filters.status !== 'all') jobs = jobs.filter(j => jobStatus(j) === state.filters.status);
+  if (state.filters.tag && state.filters.tag !== 'all') jobs = jobs.filter(j => j.tag === state.filters.tag);
   jobs.sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
   const container = document.getElementById('jobs-list');
@@ -734,18 +787,28 @@ function renderCalendar() {
 
 function cellHtml(y, m, d, isOther) {
   const dateNorm = new Date(y, m, d);
-  const ds = dateNorm.toISOString().slice(0,10);
+  // 用 local 日期格式而非 toISOString（避免時區問題）
+  const ds = `${dateNorm.getFullYear()}-${String(dateNorm.getMonth()+1).padStart(2,'0')}-${String(dateNorm.getDate()).padStart(2,'0')}`;
   const isToday = ds === todayStr();
   const dow = dateNorm.getDay();
   const dowCls = dow===0?'sun':(dow===6?'sat':'');
-  const jobs = state.jobs.filter(j => j.date === ds);
+  // 該天案件：startDate == ds，或 startDate <= ds <= endDate（跨天）
+  const jobs = state.jobs.filter(j => {
+    if (j.cancelled) return false;
+    if (j.date === ds) return true;
+    if (j.endDate && j.date && j.date <= ds && ds <= j.endDate) return true;
+    return false;
+  });
   const maxShow = 3;
   const chips = jobs.slice(0, maxShow).map(j => {
     const c = getClient(j.clientId);
     const bg = c ? c.color : '#999';
     const status = jobStatus(j);
-    const cls = status === 'paid' ? 'paid' : (status === 'done-unpaid' ? 'done-unpaid' : '');
-    return `<div class="cal-chip ${cls}" style="background:${bg}" onclick="event.stopPropagation(); editJob('${j.id}')" title="${escapeHtml(j.title)} · ${fmt(+j.amount||0)}">${escapeHtml(j.title)}</div>`;
+    let cls = status === 'paid' ? 'paid' : (status === 'done-unpaid' ? 'done-unpaid' : '');
+    // 跨天案件加 spans class
+    const isSpan = j.endDate && j.date && j.endDate !== j.date && ds !== j.date;
+    if (isSpan) cls += ' spans';
+    return `<div class="cal-chip ${cls}" style="background:${bg}" onclick="event.stopPropagation(); editJob('${j.id}')" title="${escapeHtml(j.title)} · ${fmt(+j.amount||0)}${j.endDate?' · '+j.date+' ~ '+j.endDate:''}">${escapeHtml(j.title)}</div>`;
   }).join('');
   const more = jobs.length > maxShow ? `<div class="cal-more">+${jobs.length-maxShow}</div>` : '';
   const classes = ['cal-cell', dowCls, isOther?'other-month':'', isToday?'today':''].filter(Boolean).join(' ');
@@ -797,16 +860,22 @@ function renderClients() {
   container.innerHTML = list.map(({client: c}) => {
     const clientJobs = activeJobs().filter(j => j.clientId === c.id);
     const m = thisMonth();
-    const mJobs = clientJobs.filter(j => getMonth(j.date) === m);
+    const mJobs = clientJobs.filter(j => jobBelongMonth(j) === m);
     const mPaid = mJobs.filter(j => j.paid).reduce((s,j)=>s+(+j.amount||0),0);
     const mUnpaid = mJobs.filter(j => j.done && !j.paid).reduce((s,j)=>s+(+j.amount||0),0);
     const allUnpaid = clientJobs.filter(j => j.done && !j.paid).reduce((s,j)=>s+(+j.amount||0),0);
+    // 分潤資訊
+    const introducer = c.commissionTo ? state.clients.find(x => x.id === c.commissionTo) : null;
+    const commissionInfo = (c.commissionRate > 0 && introducer)
+      ? `<span class="commission-info">介紹人 ${escapeHtml(introducer.name)} · 抽成 ${c.commissionRate}%</span>`
+      : '';
     return `<div style="padding: 14px 0; border-bottom: 1px solid var(--border);">
       <div class="client-header">
         <div class="dot" style="background:${c.color}; width: 12px; height: 12px;"></div>
         <div style="font-weight: 600; flex: 1;">
           ${escapeHtml(c.name)}
           ${allUnpaid > 0 ? `<span class="client-owes">待收 ${fmt(allUnpaid)}</span>` : ''}
+          ${commissionInfo}
         </div>
         <button class="btn btn-ghost btn-sm" onclick="editClient('${c.id}')">編輯</button>
       </div>
@@ -1369,13 +1438,22 @@ function openJobModal() {
   if (!document.getElementById('job-date').value) {
     document.getElementById('job-date').value = todayStr();
   }
+  document.getElementById('job-end-date').value = '';
   document.getElementById('job-title').value = '';
+  document.getElementById('job-tag').value = '';
   document.getElementById('job-details').value = '';
   document.getElementById('job-amount').value = '';
   document.getElementById('job-done').checked = false;
   document.getElementById('job-paid').checked = false;
   document.getElementById('job-cancelled').checked = false;
+  refreshTagSuggestions();
   document.getElementById('job-modal').classList.add('open');
+}
+
+function refreshTagSuggestions() {
+  const dl = document.getElementById('tag-suggestions');
+  if (!dl) return;
+  dl.innerHTML = getUsedTags().map(t => `<option value="${escapeHtml(t)}">`).join('');
 }
 
 function editJob(id) {
@@ -1387,12 +1465,15 @@ function editJob(id) {
   cs.innerHTML = state.clients.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   cs.value = j.clientId;
   document.getElementById('job-date').value = j.date || '';
+  document.getElementById('job-end-date').value = j.endDate || '';
   document.getElementById('job-title').value = j.title || '';
+  document.getElementById('job-tag').value = j.tag || '';
   document.getElementById('job-details').value = j.details || '';
   document.getElementById('job-amount').value = j.amount || '';
   document.getElementById('job-done').checked = !!j.done;
   document.getElementById('job-paid').checked = !!j.paid;
   document.getElementById('job-cancelled').checked = !!j.cancelled;
+  refreshTagSuggestions();
   document.getElementById('job-modal').classList.add('open');
 }
 
@@ -1405,10 +1486,13 @@ function saveJob() {
   const isDone = document.getElementById('job-done').checked;
   const isPaid = document.getElementById('job-paid').checked;
   const isCancelled = document.getElementById('job-cancelled').checked;
+  const endDate = document.getElementById('job-end-date').value;
   const payload = {
     clientId: document.getElementById('job-client').value,
     date: document.getElementById('job-date').value,
+    endDate: endDate || null,
     title: document.getElementById('job-title').value.trim(),
+    tag: document.getElementById('job-tag').value.trim(),
     details: document.getElementById('job-details').value.trim(),
     amount: +document.getElementById('job-amount').value || 0,
     done: isDone || isPaid,  // 若打勾收款但沒勾完成，自動補上
@@ -1449,6 +1533,8 @@ function openClientModal() {
   document.getElementById('client-delete-btn').classList.add('hidden');
   document.getElementById('client-name').value = '';
   document.getElementById('client-note').value = '';
+  document.getElementById('client-commission-rate').value = '';
+  refreshCommissionDropdown('');
   renderColorPicker(COLORS[state.clients.length % COLORS.length]);
   document.getElementById('client-modal').classList.add('open');
 }
@@ -1460,8 +1546,20 @@ function editClient(id) {
   document.getElementById('client-delete-btn').classList.remove('hidden');
   document.getElementById('client-name').value = c.name;
   document.getElementById('client-note').value = c.note || '';
+  document.getElementById('client-commission-rate').value = c.commissionRate || '';
+  refreshCommissionDropdown(c.commissionTo || '');
   renderColorPicker(c.color);
   document.getElementById('client-modal').classList.add('open');
+}
+
+function refreshCommissionDropdown(selected) {
+  const sel = document.getElementById('client-commission-to');
+  if (!sel) return;
+  // 介紹人選單：列出其他業主（不含自己）
+  sel.innerHTML = '<option value="">— 無 —</option>' +
+    state.clients
+      .filter(c => c.id !== editingClientId)
+      .map(c => `<option value="${c.id}" ${selected===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
 }
 
 function closeClientModal() { document.getElementById('client-modal').classList.remove('open'); }
@@ -1477,12 +1575,15 @@ function pickColor(col) { renderColorPicker(col); }
 function saveClient() {
   const name = document.getElementById('client-name').value.trim();
   const note = document.getElementById('client-note').value.trim();
+  const commissionRate = +document.getElementById('client-commission-rate').value || 0;
+  const commissionTo = document.getElementById('client-commission-to').value;
   if (!name) { toast('請輸入業主名稱'); return; }
+  const payload = { name, note, color: pickedColor, commissionRate, commissionTo };
   if (editingClientId) {
     const c = getClient(editingClientId);
-    Object.assign(c, { name, note, color: pickedColor });
+    Object.assign(c, payload);
   } else {
-    state.clients.push({ id: uid(), name, note, color: pickedColor });
+    state.clients.push({ id: uid(), ...payload });
   }
   save(); closeClientModal(); render(); toast('已儲存');
 }
@@ -1652,6 +1753,54 @@ function renderBackupStatus() {
       el.style.color = 'var(--danger)';
     }
   }
+}
+
+function exportCSV() {
+  if (!state.jobs.length) { toast('沒有資料可匯出'); return; }
+
+  const headers = ['日期', '截止日', '業主', '案件名稱', '類型', '細項', '金額', '抽成%', '實收金額', '狀態', '完成日', '收款日'];
+  const rows = state.jobs
+    .slice()
+    .sort((a,b) => (a.date||'').localeCompare(b.date||''))
+    .map(j => {
+      const c = getClient(j.clientId);
+      const clientName = c ? c.name : '未指定';
+      const rate = (c?.commissionRate) || 0;
+      const net = jobNetAmount(j);
+      const status = j.cancelled ? '已取消' : (j.paid ? '已收款' : (j.done ? '完成待收' : '進行中'));
+      return [
+        j.date || '',
+        j.endDate || '',
+        clientName,
+        j.title || '',
+        j.tag || '',
+        (j.details || '').replace(/\n/g, ' '),
+        j.amount || 0,
+        rate,
+        net,
+        status,
+        j.doneAt || '',
+        j.paidAt || ''
+      ];
+    });
+
+  // CSV 字串建構（含 BOM 給 Excel 認得 UTF-8）
+  const csv = '﻿' + [
+    headers.join(','),
+    ...rows.map(r => r.map(cell => {
+      const s = String(cell);
+      // 含逗號、引號、換行的要包雙引號並轉義
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    }).join(','))
+  ].join('\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `freelance-export-${todayStr()}.csv`;
+  a.click();
+  toast('✓ CSV 已匯出（用 Excel 開啟即可）');
 }
 
 function importData(e) {
