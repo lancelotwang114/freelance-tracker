@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>外包收益與排程管理</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header>
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
+    <div style="flex: 1; min-width: 0;">
+      <h1 id="page-title">外包收益與排程管理</h1>
+      <div class="sub" id="page-sub">個人自由工作者工具</div>
+    </div>
+    <div id="sync-indicator" class="sync-indicator sync-idle" onclick="switchTab('settings')" title="點擊開啟設定頁">○ 未啟用</div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button data-tab="dashboard" class="active">總覽<span class="badge hidden" id="dash-badge"></span></button>
+  <button data-tab="jobs">案件</button>
+  <button data-tab="calendar">行事曆</button>
+  <button data-tab="revenue">收益</button>
+  <button data-tab="clients">業主</button>
+  <button data-tab="invoice">請款單</button>
+  <button data-tab="settings">設定</button>
+</nav>
+
+<main>
+  <!-- Dashboard -->
+  <section id="tab-dashboard">
+    <div class="alerts" id="alerts"></div>
+
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="label">本月已收款</div>
+        <div class="value" id="stat-paid">$0</div>
+        <div class="delta" id="stat-paid-sub">0 筆</div>
+      </div>
+      <div class="stat warning">
+        <div class="label">本月待收款</div>
+        <div class="value" id="stat-unpaid">$0</div>
+        <div class="delta" id="stat-unpaid-sub" style="color: var(--warning);">0 筆</div>
+      </div>
+      <div class="stat">
+        <div class="label">本月待完成</div>
+        <div class="value" id="stat-pending">$0</div>
+        <div class="delta" id="stat-pending-sub" style="color: var(--muted);">0 筆</div>
+      </div>
+      <div class="stat">
+        <div class="label">年度已收款</div>
+        <div class="value" id="stat-year">$0</div>
+        <div class="delta" id="stat-year-sub"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>近期案件</h3>
+      <div id="recent-jobs"></div>
+    </div>
+    <div class="card">
+      <h3>月度趨勢（最近 6 個月）</h3>
+      <div id="month-chart"></div>
+    </div>
+
+    <div class="card">
+      <h3>📊 年度收入對比</h3>
+      <div id="year-comparison"></div>
+      <div class="cta-link" onclick="switchTab('revenue')">
+        查看完整年度趨勢 →
+      </div>
+    </div>
+  </section>
+
+  <!-- Jobs -->
+  <section id="tab-jobs" class="hidden">
+    <div class="filter-bar" id="job-filter"></div>
+    <div class="card">
+      <div id="jobs-list"></div>
+    </div>
+  </section>
+
+  <!-- Calendar -->
+  <section id="tab-calendar" class="hidden">
+    <div class="card">
+      <div class="cal-nav">
+        <button class="btn-icon" onclick="calPrev()">◀</button>
+        <h2 id="cal-title">—</h2>
+        <button class="btn-icon" onclick="calNext()">▶</button>
+        <button class="btn btn-outline btn-sm" onclick="calToday()">今天</button>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div style="font-size: 11px; color: var(--muted); text-align: center; margin-top: 8px;">
+        方框內顏色=業主色 · 黃框=完成未收款 · 淡化=已收款 · 點卡片可編輯
+      </div>
+    </div>
+    <div class="card">
+      <h3 id="cal-list-title">本月排程列表</h3>
+      <div id="cal-list"></div>
+    </div>
+  </section>
+
+  <!-- Revenue / Stats -->
+  <section id="tab-revenue" class="hidden">
+    <div class="card">
+      <div class="revenue-controls">
+        <div class="revenue-toggle">
+          <button id="rev-mode-month" class="active" onclick="setRevenueMode('month')">📅 月度</button>
+          <button id="rev-mode-year" onclick="setRevenueMode('year')">📊 年度</button>
+        </div>
+        <select class="revenue-select" id="rev-client" onchange="renderRevenue()"></select>
+        <select class="revenue-select" id="rev-range" onchange="renderRevenue()">
+          <option value="6">最近 6 個月</option>
+          <option value="12" selected>最近 12 個月</option>
+          <option value="24">最近 24 個月</option>
+          <option value="all">全部</option>
+        </select>
+      </div>
+
+      <div class="summary-grid" id="rev-summary"></div>
+    </div>
+
+    <div class="card">
+      <h3 id="rev-chart-title">月度收益趨勢</h3>
+      <div class="chart-container">
+        <svg class="chart-svg" id="rev-chart" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <div class="chart-legend">
+        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--success)"></div>已收款</div>
+        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--warning)"></div>待收款</div>
+        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--muted); opacity:.5"></div>進行中</div>
+        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--primary)"></div>總額趨勢</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>業主貢獻排行</h3>
+      <div id="rev-client-rank"></div>
+    </div>
+  </section>
+
+  <!-- Clients -->
+  <section id="tab-clients" class="hidden">
+    <div class="card">
+      <div id="clients-list"></div>
+    </div>
+  </section>
+
+  <!-- Invoice -->
+  <section id="tab-invoice" class="hidden">
+    <div class="card no-print">
+      <label>選擇業主</label>
+      <select id="inv-client"></select>
+      <label>選擇月份</label>
+      <select id="inv-month"></select>
+      <div style="display:flex; gap: 8px; margin-top: 16px;">
+        <button class="btn btn-primary" onclick="window.print()">列印 / 存 PDF</button>
+        <button class="btn btn-outline" onclick="copyInvoiceText()">複製純文字</button>
+      </div>
+    </div>
+    <div id="invoice-view"></div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="hidden">
+    <div class="card">
+      <h3>App 內提醒</h3>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">系統會在總覽頁自動顯示下列提醒：</p>
+      <ul style="font-size: 13px; color: var(--text); padding-left: 20px; line-height: 1.8;">
+        <li>🔴 <b>逾期未完成</b>：案件日期已過但還沒打勾「完成」</li>
+        <li>🟡 <b>即將到期</b>：未來 3 天內的案件</li>
+        <li>🟠 <b>待收款過久</b>：已完成但超過 <span id="cfg-unpaid-days">7</span> 天未收款</li>
+        <li>🔵 <b>月底提醒</b>：每月 25 號後，提醒該準備請款了</li>
+      </ul>
+      <label>完成後多少天未收款就提醒？</label>
+      <input type="number" id="cfg-unpaid-days-input" min="1" max="60" value="7" style="max-width: 120px;">
+      <button class="btn btn-outline btn-sm" style="margin-left: 8px;" onclick="saveConfig()">儲存</button>
+    </div>
+
+    <!-- Google Calendar 同步 -->
+    <div class="card">
+      <div class="line-card" style="background: linear-gradient(135deg, #4285f4 0%, #1a73e8 100%);">
+        <div class="line-logo" style="color: #4285f4;">📅</div>
+        <div class="line-card-info">
+          <div class="line-card-title">Google Calendar 同步</div>
+          <div class="line-card-sub">案件同步到你的 Google 行事曆，用系統原生通知提醒</div>
+        </div>
+        <span class="line-status-badge" id="cal-status-badge">未設定</span>
+      </div>
+
+      <div class="notice">
+        💡 <b>做法：</b>你可以同步到「Apps Script 所屬帳號」的 Calendar，也可以同步到「其他 Google 帳號」的 Calendar（需要把那個 Calendar 分享給 Apps Script 帳號）。<br>
+        <b>詳細步驟</b>看 <code>backend/CALENDAR-SETUP.md</code>。
+      </div>
+
+      <!-- 啟用 -->
+      <div class="form-row">
+        <label>
+          啟用 Calendar 同步
+          <span class="form-row-desc">啟用後，按「立即同步」或每次改動後自動同步</span>
+        </label>
+        <label class="toggle line-toggle">
+          <input type="checkbox" id="cal-enabled">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="section-divider"></div>
+
+      <!-- Calendar ID -->
+      <label>目標 Calendar ID</label>
+      <div class="token-input-group">
+        <input type="text" id="cal-id" placeholder="example@group.calendar.google.com">
+      </div>
+      <a href="https://support.google.com/calendar/answer/37082" target="_blank" class="help-link" style="margin-top: 6px; display: inline-block;">
+        → 如何取得 Calendar ID？（看教學文件）
+      </a>
+
+      <div class="section-divider"></div>
+
+      <!-- 自動同步 -->
+      <div class="form-row">
+        <label>
+          自動同步
+          <span class="form-row-desc">新增 / 修改 / 刪除案件後自動寫入 Calendar（可能會稍有延遲）</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="cal-autosync">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="section-divider"></div>
+
+      <!-- 狀態區 -->
+      <div id="cal-sync-status" style="font-size: 13px; color: var(--muted); margin-bottom: 12px;"></div>
+
+      <!-- 動作按鈕 -->
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn btn-primary btn-sm" onclick="saveCalendarConfig()">儲存設定</button>
+        <button class="btn btn-outline btn-sm" onclick="testCalendarConnection()">測試連線</button>
+        <button class="btn btn-outline btn-sm" onclick="syncCalendarNow()">🔄 立即同步</button>
+      </div>
+    </div>
+
+    <!-- 我的資料 -->
+    <div class="card">
+      <h3>我的資料（顯示在請款單上）</h3>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">填寫這些資訊，產生的請款單會自動帶入，業主一看就知道怎麼付款，不用再問一次。</p>
+      <div class="my-info-grid">
+        <div>
+          <label>姓名</label>
+          <input type="text" id="me-name" placeholder="王小明">
+        </div>
+        <div>
+          <label>電話</label>
+          <input type="text" id="me-phone" placeholder="0912-345-678">
+        </div>
+        <div>
+          <label>Email</label>
+          <input type="email" id="me-email" placeholder="you@example.com">
+        </div>
+        <div>
+          <label>發票抬頭（若有）</label>
+          <input type="text" id="me-title" placeholder="工作室名稱">
+        </div>
+        <div>
+          <label>匯款銀行</label>
+          <input type="text" id="me-bank" placeholder="例：玉山銀行 (808)">
+        </div>
+        <div>
+          <label>匯款帳號</label>
+          <input type="text" id="me-account" placeholder="0000-000-000000">
+        </div>
+      </div>
+      <label>備註（列在請款單底部）</label>
+      <textarea id="me-note" placeholder="例：若有疑問請來信，匯款後請告知末五碼..."></textarea>
+      <button class="btn btn-primary btn-sm" style="margin-top: 12px;" onclick="saveUserInfo()">儲存我的資料</button>
+    </div>
+
+    <!-- 資料備份 -->
+    <div class="card">
+      <h3>資料備份</h3>
+      <div id="backup-status" style="font-size: 13px; margin-bottom: 10px;"></div>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">
+        ⚠️ 資料存在瀏覽器本機，清快取、換瀏覽器、換電腦都會不見。<b>強烈建議每週匯出一次 JSON 存到雲端硬碟。</b>
+      </p>
+      <div style="display:flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn btn-primary btn-sm" onclick="exportData()">匯出 JSON 備份</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('import-file').click()">匯入 JSON</button>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)">
+        <button class="btn btn-outline btn-sm" onclick="loadDemo()">載入範例資料</button>
+        <button class="btn btn-danger btn-sm" onclick="clearAll()">清空所有資料</button>
+      </div>
+    </div>
+
+    <!-- Apps Script 後端 + Sheet 雙向同步 -->
+    <div class="card">
+      <h3>☁️ Sheet 雙向同步（跨裝置資料）</h3>
+      <div class="notice">
+        ✅ <b>跨裝置使用：</b>設定好後，公司、家裡、手機打開都會看到同樣的資料。每次改動 2 秒內自動推送，零設定。<br>
+        🛡️ <b>零遺失機制：</b>每次推送前 Apps Script 會自動 snapshot 到 Sheet 備份分頁，推錯可一鍵還原。<br>
+        📘 完整步驟：<code>backend/SETUP.md</code>
+      </div>
+
+      <label>Apps Script Web App URL（後端 API）</label>
+      <input type="text" id="sheet-api" placeholder="https://script.google.com/macros/s/.../exec">
+      <label>Google Sheet URL（選填，只是記錄用）</label>
+      <input type="text" id="sheet-url" placeholder="https://docs.google.com/spreadsheets/d/...">
+      <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+        <button class="btn btn-outline btn-sm" onclick="saveSheetConfig()">儲存設定</button>
+        <button class="btn btn-outline btn-sm" onclick="testSheetConnection()">測試連線</button>
+      </div>
+
+      <div class="section-divider"></div>
+
+      <div style="margin-bottom: 10px;">
+        <b>同步狀態：</b>
+        <div id="sheet-sync-status" style="margin-top: 4px;"></div>
+      </div>
+
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+        <button class="btn btn-primary btn-sm" onclick="enableSheetSync()">🚀 啟用自動同步</button>
+        <button class="btn btn-outline btn-sm" onclick="disableSheetSync()">停用</button>
+      </div>
+
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+        <button class="btn btn-outline btn-sm" onclick="pullFromSheet(false)">⬇️ 手動從 Sheet 拉取</button>
+        <button class="btn btn-outline btn-sm" onclick="pushToSheet(false)">⬆️ 手動推送到 Sheet</button>
+        <button class="btn btn-outline btn-sm" onclick="showSnapshotList()">🗂️ 檢視/還原備份</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>關於</h3>
+      <p style="font-size: 13px; color: var(--muted);">版本 v0.3 · 單機 HTML 版本。新增：收益統計、我的資料、備份提醒。下一步 v0.4 會接 Google Sheet 後端同步 + LINE Notify 推播。</p>
+    </div>
+  </section>
+
+</main>
+
+<button class="fab" id="fab-add" onclick="openJobModal()">+</button>
+
+<!-- Modal: Add/Edit Job -->
+<div class="modal-bg" id="job-modal">
+  <div class="modal">
+    <h2 id="job-modal-title">新增案件</h2>
+    <label>業主</label>
+    <select id="job-client"></select>
+    <label>日期</label>
+    <input type="date" id="job-date">
+    <label>案件名稱</label>
+    <input type="text" id="job-title" placeholder="例：首頁 banner 設計">
+    <label>細項說明（業主看得到）</label>
+    <textarea id="job-details" placeholder="例：1280x400 banner x 2 張，含兩次修改"></textarea>
+    <label>金額</label>
+    <input type="number" id="job-amount" placeholder="0">
+
+    <label for="job-done" class="checkbox-row">
+      <input type="checkbox" id="job-done">
+      <span>✓ 案件完成</span>
+    </label>
+    <label for="job-paid" class="checkbox-row">
+      <input type="checkbox" id="job-paid">
+      <span>$ 已收款</span>
+    </label>
+
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeJobModal()">取消</button>
+      <button class="btn btn-danger hidden" id="job-delete-btn" onclick="deleteJob()">刪除</button>
+      <button class="btn btn-primary" onclick="saveJob()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Add/Edit Client -->
+<div class="modal-bg" id="client-modal">
+  <div class="modal">
+    <h2 id="client-modal-title">新增業主</h2>
+    <label>業主名稱</label>
+    <input type="text" id="client-name" placeholder="例：A 公司">
+    <label>顏色標記</label>
+    <div id="color-picker" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+    <label>備註（例：聯絡人、匯款帳號等）</label>
+    <textarea id="client-note"></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeClientModal()">取消</button>
+      <button class="btn btn-danger hidden" id="client-delete-btn" onclick="deleteClient()">刪除</button>
+      <button class="btn btn-primary" onclick="saveClient()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
