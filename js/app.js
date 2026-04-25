@@ -1,9 +1,5 @@
 /* =========================================
-   外包收益與排程管理 - 主程式 v0.3
-   新增：收益統計（月/年/業主切換、SVG 圖表、業主貢獻排行）
-         我的資料 → 請款單
-         備份提醒（14 天沒匯出會警示）
-         Google Sheet 同步欄位預留
+   外包收益與排程管理 - 主程式 v1.0
    ========================================= */
 
 // ============== Data Layer ==============
@@ -137,11 +133,20 @@ function daysBetween(a, b) {
   return Math.floor((db - da) / 86400000);
 }
 
-function toast(msg) {
+let toastTimer = null;
+function toast(msg, durationMs) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 1800);
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), durationMs || 2500);
+}
+// 顯示一個會持續到下次 toast 的「進行中」訊息（例如「同步中...」）
+function toastProgress(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
 }
 
 function escapeHtml(s) {
@@ -922,21 +927,75 @@ function setRevenueMode(mode) {
   revenueState.mode = mode;
   document.getElementById('rev-mode-month').classList.toggle('active', mode==='month');
   document.getElementById('rev-mode-year').classList.toggle('active', mode==='year');
-  // 年度模式下 range 選單改變
+  buildRangeOptions();
+  renderRevenue();
+}
+
+// 動態產生範圍選單（依現有資料的年份）
+function buildRangeOptions() {
   const rangeSel = document.getElementById('rev-range');
-  if (mode === 'year') {
-    rangeSel.innerHTML = `
-      <option value="3">最近 3 年</option>
-      <option value="5" selected>最近 5 年</option>
-      <option value="all">全部</option>`;
-    revenueState.range = 5;
+  if (!rangeSel) return;
+  // 從 jobs 中取得所有年份
+  const years = [...new Set(state.jobs.map(j => (j.date||'').slice(0,4)).filter(Boolean))].sort().reverse();
+  let html = '';
+  if (revenueState.mode === 'year') {
+    html += '<option value="3">最近 3 年</option>';
+    html += '<option value="5" selected>最近 5 年</option>';
+    html += '<option value="all">全部</option>';
+    html += '<option value="custom">📌 自訂年份範圍</option>';
+    revenueState.range = '5';
   } else {
-    rangeSel.innerHTML = `
-      <option value="6">最近 6 個月</option>
-      <option value="12" selected>最近 12 個月</option>
-      <option value="24">最近 24 個月</option>
-      <option value="all">全部</option>`;
-    revenueState.range = 12;
+    html += '<option value="6">最近 6 個月</option>';
+    html += '<option value="12" selected>最近 12 個月</option>';
+    html += '<option value="24">最近 24 個月</option>';
+    html += '<option value="all">全部</option>';
+    if (years.length) {
+      html += '<optgroup label="特定年度">';
+      years.forEach(y => {
+        html += `<option value="year-${y}">📅 ${y} 年（整年）</option>`;
+      });
+      html += '</optgroup>';
+    }
+    html += '<option value="custom">📌 自訂月份範圍</option>';
+    revenueState.range = '12';
+  }
+  rangeSel.innerHTML = html;
+  // 隱藏自訂欄位
+  document.getElementById('rev-custom-month')?.classList.add('hidden');
+  document.getElementById('rev-custom-year')?.classList.add('hidden');
+}
+
+function onRangeChange() {
+  const v = document.getElementById('rev-range').value;
+  revenueState.range = v;
+  // 顯示/隱藏自訂欄位
+  const cm = document.getElementById('rev-custom-month');
+  const cy = document.getElementById('rev-custom-year');
+  cm?.classList.add('hidden');
+  cy?.classList.add('hidden');
+  if (v === 'custom') {
+    if (revenueState.mode === 'month') {
+      cm?.classList.remove('hidden');
+      // 預設值
+      const fromEl = document.getElementById('rev-from-month');
+      const toEl = document.getElementById('rev-to-month');
+      if (!fromEl.value) {
+        const allMonths = [...new Set(state.jobs.map(j => getMonth(j.date)).filter(Boolean))].sort();
+        if (allMonths.length) fromEl.value = allMonths[0];
+        else fromEl.value = thisMonth();
+      }
+      if (!toEl.value) toEl.value = thisMonth();
+    } else {
+      cy?.classList.remove('hidden');
+      const fromEl = document.getElementById('rev-from-year');
+      const toEl = document.getElementById('rev-to-year');
+      if (!fromEl.value) {
+        const allYears = [...new Set(state.jobs.map(j => (j.date||'').slice(0,4)).filter(Boolean))].sort();
+        if (allYears.length) fromEl.value = allYears[0];
+        else fromEl.value = new Date().getFullYear();
+      }
+      if (!toEl.value) toEl.value = new Date().getFullYear();
+    }
   }
   renderRevenue();
 }
@@ -955,7 +1014,7 @@ function renderRevenue() {
 
   const rangeSel = document.getElementById('rev-range');
   if (rangeSel) {
-    revenueState.range = rangeSel.value === 'all' ? 'all' : +rangeSel.value;
+    revenueState.range = rangeSel.value;
   }
 
   // 過濾業主，並排除取消的案件
@@ -974,17 +1033,41 @@ function renderRevenue() {
   });
 
   let keys = Object.keys(buckets).sort();
-  // 年月範圍：如果沒資料也至少填當期
   if (!keys.length) keys = [revenueState.mode==='year' ? String(new Date().getFullYear()) : thisMonth()];
 
   // 補齊空月/空年
   const filled = fillEmptyBuckets(keys, revenueState.mode);
   filled.forEach(k => { if (!buckets[k]) buckets[k] = { paid: 0, unpaid: 0, pending: 0 }; });
 
-  // 取最後 N 筆
+  // 依 range 決定顯示範圍
+  const r = String(revenueState.range);
   let displayKeys = filled;
-  if (revenueState.range !== 'all') {
-    displayKeys = filled.slice(-revenueState.range);
+
+  if (r === 'all') {
+    displayKeys = filled;
+  } else if (r === 'custom') {
+    // 自訂範圍
+    if (revenueState.mode === 'month') {
+      const from = document.getElementById('rev-from-month')?.value || filled[0];
+      const to = document.getElementById('rev-to-month')?.value || filled[filled.length-1];
+      const lo = from <= to ? from : to;
+      const hi = from <= to ? to : from;
+      displayKeys = filled.filter(k => k >= lo && k <= hi);
+    } else {
+      const from = document.getElementById('rev-from-year')?.value || filled[0];
+      const to = document.getElementById('rev-to-year')?.value || filled[filled.length-1];
+      const lo = +from <= +to ? +from : +to;
+      const hi = +from <= +to ? +to : +from;
+      displayKeys = filled.filter(k => +k >= lo && +k <= hi);
+    }
+  } else if (r.startsWith('year-')) {
+    // 整個年度（月度模式才有）
+    const y = r.slice(5);
+    displayKeys = filled.filter(k => k.startsWith(y + '-'));
+  } else {
+    // 數字 = 最近 N 個
+    const n = +r;
+    if (n > 0) displayKeys = filled.slice(-n);
   }
 
   const data = displayKeys.map(k => ({ label: k, ...buckets[k] }));
@@ -1980,7 +2063,7 @@ function enterClientMode(cid) {
 function exportData() {
   const payload = {
     _exportedAt: new Date().toISOString(),
-    _version: 'v0.4',
+    _version: 'v1.0',
     _counts: { clients: state.clients.length, jobs: state.jobs.length },
     clients: state.clients,
     jobs: state.jobs,
@@ -2251,7 +2334,7 @@ function exportSettings() {
   // 只匯出設定，不含 clients/jobs（那些走 Sheet 同步）
   const settings = {
     _exportedAt: new Date().toISOString(),
-    _version: 'v0.4',
+    _version: 'v1.0',
     _device: navigator.platform,
     sheetConfig: {
       apiUrl: config.sheetConfig?.apiUrl || '',
@@ -2378,6 +2461,7 @@ async function pullFromSheet(silent = false) {
     return false;
   }
   setSyncStatus('syncing');
+  if (!silent) toastProgress('⬇️ 從雲端下載中...');
   try {
     const url = cfg.apiUrl + '?action=list&token=' + encodeURIComponent(cfg.apiToken);
     const resp = await fetch(url);
@@ -2400,7 +2484,7 @@ async function pullFromSheet(silent = false) {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
     render();
-    if (!silent) toast(`✓ 從 Sheet 拉到 ${state.jobs.length} 筆案件`);
+    if (!silent) toast(`✓ 已下載 ${state.clients.length} 業主、${state.jobs.length} 案件`, 3500);
     return true;
   } catch (err) {
     setSyncStatus('offline', err.message);
@@ -2418,6 +2502,7 @@ async function pushToSheet(silent = false) {
   // 注意：sheetSyncEnabled 檢查只在 schedulePush（自動推送）時做，
   // 手動按按鈕不受限制，方便使用者在「停用」狀態下也能手動操作
   setSyncStatus('syncing');
+  if (!silent) toastProgress('⬆️ 上傳到雲端中...');
   try {
     const resp = await fetch(cfg.apiUrl, {
       method: 'POST',
@@ -2438,7 +2523,7 @@ async function pushToSheet(silent = false) {
     config.sheetPendingPush = false;
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
-    if (!silent) toast('✓ 已推送到 Sheet');
+    if (!silent) toast(`✓ 已上傳 ${state.clients.length} 業主、${state.jobs.length} 案件到雲端`, 3500);
     return true;
   } catch (err) {
     setSyncStatus('offline', err.message);
@@ -2526,7 +2611,7 @@ function updateSheetSyncBadge() {
 async function showSnapshotList() {
   const cfg = config.sheetConfig;
   if (!cfg?.apiUrl || !cfg?.apiToken) { alert('請先設定 API URL'); return; }
-  toast('讀取中...');
+  toastProgress('📂 讀取備份歷史中...');
   try {
     const url = cfg.apiUrl + '?action=listSnapshots&token=' + encodeURIComponent(cfg.apiToken);
     const resp = await fetch(url);
@@ -2548,7 +2633,7 @@ async function showSnapshotList() {
 async function restoreSnapshot(id) {
   const cfg = config.sheetConfig;
   if (!confirm(`即將還原 snapshot: ${id}\n\nSheet 當前內容會先備份再還原。\n還原後，本地會重新從 Sheet 拉取。\n\n確定？`)) return;
-  toast('還原中...');
+  toastProgress('⏳ 還原中，請勿關閉視窗...');
   try {
     const resp = await fetch(cfg.apiUrl, {
       method: 'POST',
@@ -2584,7 +2669,7 @@ async function testSheetConnection() {
   if (!apiUrl) { toast('請先填入 API URL'); return; }
   const token = prompt('請輸入 API Token');
   if (!token) return;
-  toast('測試連線中...');
+  toastProgress('🔌 正在測試雲端連線...');
   try {
     const resp = await fetch(apiUrl + '?action=ping&token=' + encodeURIComponent(token));
     const data = await resp.json();
@@ -2653,13 +2738,13 @@ async function testCalendarConnection() {
   if (!calId) { toast('請先填入 Calendar ID'); return; }
   const apiUrl = (config.sheetConfig && config.sheetConfig.apiUrl) || '';
   if (!apiUrl) {
-    alert('請先在「Google Sheet 同步（v0.4 預留）」區塊填入 Apps Script URL，才能呼叫後端。\n\n（Calendar 同步需要透過 Apps Script 後端執行）');
+    alert('請先到「進階設定 → ☁️ 雲端同步」填入 Apps Script API URL 並測試連線成功。\n\n（行事曆同步需要透過後端執行）');
     return;
   }
   const token = prompt('請輸入 API Token（首次測試時填，之後會記下來）', config.sheetConfig?.apiToken || '');
   if (!token) return;
 
-  toast('測試連線中...');
+  toastProgress('🔌 正在測試行事曆連線...');
   try {
     const resp = await fetch(apiUrl, {
       method: 'POST',
@@ -2685,7 +2770,7 @@ async function syncCalendarNow() {
   if (!calId) { toast('請先填入 Calendar ID'); return; }
   const apiUrl = (config.sheetConfig && config.sheetConfig.apiUrl) || '';
   if (!apiUrl) {
-    alert('請先在「Google Sheet 同步（v0.4 預留）」區塊填入 Apps Script URL');
+    alert('請先到「進階設定 → ☁️ 雲端同步」填入 Apps Script API URL');
     return;
   }
   let token = config.sheetConfig?.apiToken;
@@ -2696,7 +2781,7 @@ async function syncCalendarNow() {
 
   if (!confirm(`即將同步 ${state.jobs.length} 筆案件到 Calendar。\n\n注意：會先刪除 Calendar 上所有由本工具建立的舊事件，再重新建立。\n\n確定？`)) return;
 
-  toast('同步中，請稍候...');
+  toastProgress('📅 同步行事曆中（可能需要 10-30 秒）...');
   try {
     const resp = await fetch(apiUrl, {
       method: 'POST',
@@ -2822,6 +2907,7 @@ loadUserInfoUI();
 loadSheetConfigUI();
 loadCalendarConfigUI();
 updateSheetSyncBadge();
+buildRangeOptions();
 setupAutoSave();
 render();
 
