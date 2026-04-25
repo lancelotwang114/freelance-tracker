@@ -89,8 +89,29 @@ function load() {
   state.clients = (state.clients || []).map(c => ({
     ...c,
     commissionRate: c.commissionRate ?? 0,
-    commissionTo: c.commissionTo ?? ''
+    commissionTo: c.commissionTo ?? '',
+    prepaidMode: c.prepaidMode ?? false,
+    prepayments: c.prepayments ?? []
   }));
+
+  // 自動 migration：Esthé One 從備註轉換成儲值制（一次性）
+  state.clients.forEach(c => {
+    if (c.name === 'Esthé One' && !c.prepaidMode && (c.note || '').includes('儲值')) {
+      c.prepaidMode = true;
+      c.prepayments = [
+        { id: uid(), date: '2025-09-12', amount: 2000, note: 'LINEPAY' },
+        { id: uid(), date: '2025-09-15', amount: 3000, note: 'LINEPAY' }
+      ];
+      c.note = '';
+      // 同時把該業主案件全部標 paid（如果還沒）
+      state.jobs.forEach(j => {
+        if (j.clientId === c.id && !j.paid) {
+          j.paid = true;
+          j.paidAt = j.paidAt || j.date;
+        }
+      });
+    }
+  });
 
   // 若網址帶 ?client=xxx，進入業主唯讀模式
   const params = new URLSearchParams(location.search);
@@ -155,7 +176,8 @@ function escapeHtml(s) {
 
 function jobStatus(j) {
   if (j.cancelled) return 'cancelled';
-  if (j.paid) return 'paid';
+  if (j.paid && j.done) return 'paid';
+  if (j.paid && !j.done) return 'prepaid';   // 已收款但未完成（儲值制常見）
   if (j.done) return 'done-unpaid';
   return 'pending';
 }
@@ -191,6 +213,15 @@ function getUsedTags() {
   const tags = new Set();
   state.jobs.forEach(j => { if (j.tag) tags.add(j.tag); });
   return [...tags].sort();
+}
+
+// 儲值制業主餘額計算
+function clientBalance(clientId) {
+  const c = getClient(clientId);
+  if (!c?.prepaidMode) return null;
+  const total = (c.prepayments || []).reduce((s,p) => s + (+p.amount||0), 0);
+  const used = activeJobs().filter(j => j.clientId === clientId).reduce((s,j) => s + (+j.amount||0), 0);
+  return { total, used, balance: total - used };
 }
 
 function getClient(cid) { return state.clients.find(c => c.id === cid); }
@@ -390,7 +421,21 @@ function computeAlerts() {
     }
   }
 
-  // 5. 備份提醒（> N 天沒匯出備份 + 有資料時才提示）
+  // 5. 儲值餘額不足提醒
+  state.clients.forEach(c => {
+    const bal = clientBalance(c.id);
+    if (bal && bal.balance < 1000) {
+      alerts.push({
+        type: 'low-balance',
+        icon: '💰',
+        title: `${c.name} 儲值餘額剩 ${fmt(bal.balance)}`,
+        desc: bal.balance < 0 ? '已超支，建議盡快請業主儲值' : '建議提醒業主再儲值',
+        onClick: () => { setFilter('clientId', c.id); switchTab('clients'); }
+      });
+    }
+  });
+
+  // 6. 備份提醒（> N 天沒匯出備份 + 有資料時才提示）
   if (state.jobs.length > 0) {
     const last = config.lastExportAt;
     const daysAgo = last ? daysBetween(last, today) : Infinity;
@@ -649,8 +694,9 @@ function renderJobs() {
   const statusOptions = [
     { v: 'all', label: '全部狀態' },
     { v: 'pending', label: '未完成' },
+    { v: 'prepaid', label: '已收·待做' },
     { v: 'done-unpaid', label: '完成待收款' },
-    { v: 'paid', label: '已收款' },
+    { v: 'paid', label: '已完成已收款' },
     { v: 'cancelled', label: '🚫 已取消' }
   ];
   const usedTags = getUsedTags();
@@ -809,7 +855,7 @@ function cellHtml(y, m, d, isOther) {
     const c = getClient(j.clientId);
     const bg = c ? c.color : '#999';
     const status = jobStatus(j);
-    let cls = status === 'paid' ? 'paid' : (status === 'done-unpaid' ? 'done-unpaid' : '');
+    let cls = status === 'paid' ? 'paid' : (status === 'done-unpaid' ? 'done-unpaid' : (status === 'prepaid' ? 'prepaid' : ''));
     // 跨天案件加 spans class
     const isSpan = j.endDate && j.date && j.endDate !== j.date && ds !== j.date;
     if (isSpan) cls += ' spans';
@@ -874,6 +920,14 @@ function renderClients() {
     const commissionInfo = (c.commissionRate > 0 && introducer)
       ? `<span class="commission-info">介紹人 ${escapeHtml(introducer.name)} · 抽成 ${c.commissionRate}%</span>`
       : '';
+
+    // 儲值制餘額
+    const bal = clientBalance(c.id);
+    let balanceBadge = '';
+    if (bal) {
+      const cls = bal.balance < 0 ? 'empty' : (bal.balance < 1000 ? 'low' : '');
+      balanceBadge = `<span class="prepaid-badge ${cls}" title="累計儲值 ${fmt(bal.total)} - 已用 ${fmt(bal.used)}">💰 餘額 ${fmt(bal.balance)}</span>`;
+    }
     // 近 12 個月活躍度時間軸
     const tlMonths = [];
     const tlNow = new Date();
@@ -904,7 +958,8 @@ function renderClients() {
         <div class="dot" style="background:${c.color}; width: 12px; height: 12px;"></div>
         <div style="font-weight: 600; flex: 1;">
           ${escapeHtml(c.name)}
-          ${allUnpaid > 0 ? `<span class="client-owes">待收 ${fmt(allUnpaid)}</span>` : ''}
+          ${balanceBadge}
+          ${allUnpaid > 0 && !c.prepaidMode ? `<span class="client-owes">待收 ${fmt(allUnpaid)}</span>` : ''}
           ${commissionInfo}
         </div>
         <button class="btn btn-ghost btn-sm" onclick="editClient('${c.id}')">編輯</button>
@@ -1815,11 +1870,7 @@ function toggleDone(id) {
 function togglePaid(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
   if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
-  // 要收款必須先完成
-  if (!j.paid && !j.done) {
-    j.done = true;
-    j.doneAt = todayStr();
-  }
+  // 解耦：收款不強制完成（儲值制可以先收錢後完成）
   j.paid = !j.paid;
   j.paidAt = j.paid ? todayStr() : null;
   save(); render();
@@ -1848,6 +1899,7 @@ function openJobModal() {
   document.getElementById('job-paid').checked = false;
   document.getElementById('job-cancelled').checked = false;
   refreshTagSuggestions();
+  onJobClientChange();
   document.getElementById('job-modal').classList.add('open');
 }
 
@@ -1855,6 +1907,32 @@ function refreshTagSuggestions() {
   const dl = document.getElementById('tag-suggestions');
   if (!dl) return;
   dl.innerHTML = getUsedTags().map(t => `<option value="${escapeHtml(t)}">`).join('');
+}
+
+// 切換業主時：儲值制業主自動勾「已收款」並顯示餘額
+function onJobClientChange() {
+  const cid = document.getElementById('job-client').value;
+  const c = getClient(cid);
+  const hint = document.getElementById('job-prepaid-hint');
+  if (!c?.prepaidMode) {
+    hint?.classList.add('hidden');
+    return;
+  }
+  // 儲值制業主：自動勾「已收款」（編輯時不要強制覆蓋）
+  if (!editingJobId) {
+    document.getElementById('job-paid').checked = true;
+  }
+  // 顯示餘額提示
+  const bal = clientBalance(cid);
+  if (bal && hint) {
+    const amt = +document.getElementById('job-amount').value || 0;
+    const willBe = bal.balance - amt;
+    let warn = '';
+    if (willBe < 0) warn = `<br>⚠️ 案件金額超過餘額！會超支 ${fmt(-willBe)}`;
+    else if (willBe < 1000) warn = `<br>⚠️ 扣款後餘額剩 ${fmt(willBe)}，建議提醒業主再儲值`;
+    hint.innerHTML = `💰 ${escapeHtml(c.name)} 是儲值制，目前餘額 <b>${fmt(bal.balance)}</b>${warn}`;
+    hint.classList.remove('hidden');
+  }
 }
 
 function editJob(id) {
@@ -1875,6 +1953,7 @@ function editJob(id) {
   document.getElementById('job-paid').checked = !!j.paid;
   document.getElementById('job-cancelled').checked = !!j.cancelled;
   refreshTagSuggestions();
+  onJobClientChange();
   document.getElementById('job-modal').classList.add('open');
 }
 
@@ -1896,8 +1975,8 @@ function saveJob() {
     tag: document.getElementById('job-tag').value.trim(),
     details: document.getElementById('job-details').value.trim(),
     amount: +document.getElementById('job-amount').value || 0,
-    done: isDone || isPaid,  // 若打勾收款但沒勾完成，自動補上
-    paid: isPaid,
+    done: isDone,    // 解耦：完成獨立判斷
+    paid: isPaid,    // 解耦：收款獨立判斷
     cancelled: isCancelled
   };
   if (!payload.title) { toast('請輸入案件名稱'); return; }
@@ -1935,6 +2014,8 @@ function openClientModal() {
   document.getElementById('client-name').value = '';
   document.getElementById('client-note').value = '';
   document.getElementById('client-commission-rate').value = '';
+  modalPrepayments = [];
+  setPaymentMode('normal');
   refreshCommissionDropdown('');
   renderColorPicker(COLORS[state.clients.length % COLORS.length]);
   document.getElementById('client-modal').classList.add('open');
@@ -1948,9 +2029,71 @@ function editClient(id) {
   document.getElementById('client-name').value = c.name;
   document.getElementById('client-note').value = c.note || '';
   document.getElementById('client-commission-rate').value = c.commissionRate || '';
+  modalPrepayments = JSON.parse(JSON.stringify(c.prepayments || []));
+  setPaymentMode(c.prepaidMode ? 'prepaid' : 'normal');
   refreshCommissionDropdown(c.commissionTo || '');
   renderColorPicker(c.color);
   document.getElementById('client-modal').classList.add('open');
+}
+
+// ============== 儲值紀錄管理（業主 Modal）==============
+let modalPrepayments = [];  // Modal 內當前編輯的儲值清單
+
+function setPaymentMode(mode) {
+  const radios = document.querySelectorAll('input[name="client-payment-mode"]');
+  radios.forEach(r => { r.checked = (r.value === mode); });
+  document.getElementById('prepayment-section').classList.toggle('hidden', mode !== 'prepaid');
+  if (mode === 'prepaid') renderPrepaymentList();
+}
+
+function onPaymentModeChange() {
+  const mode = document.querySelector('input[name="client-payment-mode"]:checked')?.value || 'normal';
+  document.getElementById('prepayment-section').classList.toggle('hidden', mode !== 'prepaid');
+  if (mode === 'prepaid') renderPrepaymentList();
+}
+
+function renderPrepaymentList() {
+  const list = document.getElementById('prepayment-list');
+  if (!list) return;
+  if (!modalPrepayments.length) {
+    list.innerHTML = '<div style="font-size: 12px; color: var(--muted); padding: 4px 0;">尚無儲值紀錄</div>';
+  } else {
+    list.innerHTML = modalPrepayments.map((p, i) => `
+      <div style="display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 13px;">
+        <span style="color: var(--muted); min-width: 92px;">${p.date}</span>
+        <span style="flex: 1; color: var(--success); font-weight: 600;">+${fmt(+p.amount||0)}</span>
+        <span style="color: var(--muted); font-size: 12px;">${escapeHtml(p.note||'')}</span>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="removePrepayment(${i})" style="color: var(--danger); padding: 2px 6px;">✕</button>
+      </div>
+    `).join('');
+  }
+
+  // 計算餘額
+  const total = modalPrepayments.reduce((s,p) => s + (+p.amount||0), 0);
+  const used = editingClientId ? activeJobs().filter(j => j.clientId === editingClientId).reduce((s,j) => s + (+j.amount||0), 0) : 0;
+  const balance = total - used;
+  document.getElementById('prepayment-balance').innerHTML =
+    `累計儲值：<b>${fmt(total)}</b> · 已使用：<b>${fmt(used)}</b> · ` +
+    `<span style="color: ${balance < 1000 ? 'var(--danger)' : 'var(--success)'};">餘額 <b>${fmt(balance)}</b></span>`;
+}
+
+function addPrepayment() {
+  const dateStr = prompt('儲值日期（YYYY-MM-DD）', todayStr());
+  if (!dateStr) return;
+  const amtStr = prompt('儲值金額', '');
+  if (!amtStr) return;
+  const amt = +amtStr;
+  if (isNaN(amt) || amt <= 0) { toast('金額無效'); return; }
+  const note = prompt('備註（選填，例：LINEPAY、轉帳）', '') || '';
+  modalPrepayments.push({ id: uid(), date: dateStr, amount: amt, note });
+  modalPrepayments.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  renderPrepaymentList();
+}
+
+function removePrepayment(i) {
+  if (!confirm('確定要刪除這筆儲值紀錄？')) return;
+  modalPrepayments.splice(i, 1);
+  renderPrepaymentList();
 }
 
 function refreshCommissionDropdown(selected) {
@@ -1978,8 +2121,14 @@ function saveClient() {
   const note = document.getElementById('client-note').value.trim();
   const commissionRate = +document.getElementById('client-commission-rate').value || 0;
   const commissionTo = document.getElementById('client-commission-to').value;
+  const paymentMode = document.querySelector('input[name="client-payment-mode"]:checked')?.value || 'normal';
   if (!name) { toast('請輸入業主名稱'); return; }
-  const payload = { name, note, color: pickedColor, commissionRate, commissionTo };
+  const payload = {
+    name, note, color: pickedColor,
+    commissionRate, commissionTo,
+    prepaidMode: paymentMode === 'prepaid',
+    prepayments: paymentMode === 'prepaid' ? modalPrepayments : []
+  };
   if (editingClientId) {
     const c = getClient(editingClientId);
     Object.assign(c, payload);
@@ -2331,6 +2480,8 @@ function clearAll() {
 document.getElementById('inv-client').addEventListener('change', drawInvoice);
 document.getElementById('inv-month').addEventListener('change', drawInvoice);
 document.getElementById('inv-month-end')?.addEventListener('change', drawInvoice);
+// 案件金額變動時更新儲值提示
+document.getElementById('job-amount')?.addEventListener('input', onJobClientChange);
 
 // ============== 跨裝置設定檔（攜帶 API URL、Token、我的資料）==============
 function exportSettings() {

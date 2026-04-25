@@ -169,6 +169,14 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 .row.state-paid .title { color: var(--muted); }
 .row.state-paid .amount { color: var(--success); }
 
+/* 已付款但未完成（儲值制常見） */
+.row.state-prepaid { background: linear-gradient(to right, transparent 60%, var(--primary-light)); }
+.row.state-prepaid .amount { color: var(--primary); }
+.row.state-prepaid .amount::after { content: " · 已收·待做"; font-size: 11px; font-weight: 500; }
+
+/* 行事曆 prepaid chip */
+.cal-chip.prepaid { outline: 1.5px solid var(--primary); outline-offset: -1.5px; }
+
 /* 批次操作 */
 .bulk-bar {
   display: flex;
@@ -540,6 +548,19 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
   font-weight: 600;
   margin-left: 6px;
 }
+
+.prepaid-badge {
+  display: inline-block;
+  background: var(--success-light);
+  color: var(--success);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+.prepaid-badge.low { background: var(--warning-light); color: var(--warning); }
+.prepaid-badge.empty { background: var(--danger-light); color: var(--danger); }
 
 /* ==================== Calendar ==================== */
 .cal-nav {
@@ -1178,6 +1199,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ==================== Alert: backup reminder ==================== */
 .alert.type-backup { background: #faf5ff; border-left: 4px solid #a855f7; }
+.alert.type-low-balance { background: #f0fdf4; border-left: 4px solid #16a34a; }
 .alert.type-sheet-prompt { background: #ecfeff; border-left: 4px solid #06b6d4; }
 
 /* ==================== 設定頁分類 + 摺疊 ==================== */

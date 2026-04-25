@@ -446,7 +446,8 @@
   <div class="modal">
     <h2 id="job-modal-title">新增案件</h2>
     <label>業主</label>
-    <select id="job-client"></select>
+    <select id="job-client" onchange="onJobClientChange()"></select>
+    <div id="job-prepaid-hint" class="hidden" style="background: var(--success-light); color: var(--success); padding: 8px 10px; border-radius: 6px; font-size: 12px; margin-top: 4px;"></div>
 
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
       <div>
@@ -502,6 +503,27 @@
     <div id="color-picker" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
     <label>備註（例：聯絡人、匯款帳號等）</label>
     <textarea id="client-note"></textarea>
+
+    <div class="section-divider"></div>
+
+    <h3 style="font-size: 14px; margin-bottom: 8px;">💳 付款方式</h3>
+    <div style="display: flex; gap: 16px; margin-bottom: 8px;">
+      <label style="display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 14px;">
+        <input type="radio" name="client-payment-mode" value="normal" style="width: auto; margin: 0;" onchange="onPaymentModeChange()">
+        <span>一般（按案件請款）</span>
+      </label>
+      <label style="display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 14px;">
+        <input type="radio" name="client-payment-mode" value="prepaid" style="width: auto; margin: 0;" onchange="onPaymentModeChange()">
+        <span>💰 儲值制（業主先預付）</span>
+      </label>
+    </div>
+
+    <div id="prepayment-section" class="hidden" style="background: var(--bg); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+      <h4 style="font-size: 13px; margin-bottom: 8px;">儲值紀錄</h4>
+      <div id="prepayment-list" style="margin-bottom: 8px;"></div>
+      <button class="btn btn-outline btn-sm" type="button" onclick="addPrepayment()">+ 新增儲值</button>
+      <div id="prepayment-balance" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 13px;"></div>
+    </div>
 
     <div class="section-divider"></div>
 
