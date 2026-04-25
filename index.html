@@ -179,6 +179,23 @@
       <button class="btn btn-outline btn-sm" style="margin-left: 8px;" onclick="saveConfig()">儲存</button>
     </div>
 
+    <!-- 跨裝置設定檔 -->
+    <div class="card">
+      <h3>📦 跨裝置設定檔</h3>
+      <div class="notice">
+        💡 <b>用途：</b>把所有設定（API URL、Token、我的資料、Calendar 設定）打包成 JSON 檔，新裝置（公司、家、手機）匯入就不用重新輸入。<br>
+        ⚠️ <b>注意：</b>此檔案含 API Token，<b>勿傳到 Email、聊天群組、公開雲端</b>，建議用 USB、加密雲端、或密碼管理器（如 1Password）保管。
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn btn-primary btn-sm" onclick="exportSettings()">📤 匯出設定檔</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('settings-import-file').click()">📥 匯入設定檔</button>
+        <input type="file" id="settings-import-file" accept=".json" style="display:none" onchange="importSettings(event)">
+      </div>
+      <p style="font-size: 12px; color: var(--muted); margin-top: 10px;">
+        💡 匯入流程：在新裝置 → 設定頁 → 匯入設定檔 → 自動填好 URL+Token → 接著手動「⬇️ 從 Sheet 拉取」一次 → 啟用自動同步。
+      </p>
+    </div>
+
     <!-- Google Calendar 同步 -->
     <div class="card">
       <div class="line-card" style="background: linear-gradient(135deg, #4285f4 0%, #1a73e8 100%);">

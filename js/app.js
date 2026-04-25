@@ -1419,6 +1419,102 @@ function clearAll() {
 document.getElementById('inv-client').addEventListener('change', drawInvoice);
 document.getElementById('inv-month').addEventListener('change', drawInvoice);
 
+// ============== 跨裝置設定檔（攜帶 API URL、Token、我的資料）==============
+function exportSettings() {
+  // 只匯出設定，不含 clients/jobs（那些走 Sheet 同步）
+  const settings = {
+    _exportedAt: new Date().toISOString(),
+    _version: 'v0.4',
+    _device: navigator.platform,
+    sheetConfig: {
+      apiUrl: config.sheetConfig?.apiUrl || '',
+      apiToken: config.sheetConfig?.apiToken || '',
+      sheetUrl: config.sheetConfig?.sheetUrl || ''
+    },
+    sheetSyncEnabled: config.sheetSyncEnabled || false,
+    userInfo: config.userInfo || {},
+    calId: config.calId || '',
+    calEnabled: config.calEnabled || false,
+    calAutoSync: config.calAutoSync || false,
+    unpaidRemindDays: config.unpaidRemindDays || 7,
+    backupRemindDays: config.backupRemindDays || 14
+  };
+
+  const hasToken = !!settings.sheetConfig.apiToken;
+  const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `freelance-tracker-settings-${todayStr()}.json`;
+  a.click();
+
+  if (hasToken) {
+    setTimeout(() => {
+      alert('✓ 設定檔已下載\n\n⚠️ 此檔案含 API Token，請小心保管：\n• 勿傳到 Email / 聊天 / 公開雲端\n• 建議放 USB、加密硬碟、或密碼管理器\n\n到新裝置：\n1. 設定頁 → 匯入設定檔（選此檔）\n2. 設定頁 → 手動從 Sheet 拉取\n3. 啟用自動同步');
+    }, 100);
+  } else {
+    toast('✓ 設定檔已匯出（未含 Token，因為你還沒設過）');
+  }
+}
+
+function importSettings(e) {
+  const f = e.target.files[0];
+  if (!f) return;
+  e.target.value = '';  // 清空，下次選同檔案才會觸發
+
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const s = JSON.parse(r.result);
+      // 驗證格式
+      if (!s.sheetConfig && !s.userInfo) {
+        alert('這似乎不是設定檔（缺少必要欄位）。\n\n注意：別把案件資料的 freelance-import.json 跟設定檔搞混。');
+        return;
+      }
+
+      const summary = [];
+      if (s.sheetConfig?.apiUrl) summary.push('• API URL + Token');
+      if (s.userInfo?.name) summary.push(`• 我的資料（${s.userInfo.name}）`);
+      if (s.calId) summary.push(`• Calendar 同步設定`);
+      if (s.unpaidRemindDays) summary.push(`• 提醒偏好`);
+
+      if (!confirm(`即將匯入下列設定：\n\n${summary.join('\n')}\n\n本地原本的設定會被覆蓋（資料 clients/jobs 不受影響）。\n\n匯出時間：${s._exportedAt}\n\n確定？`)) return;
+
+      // 套用設定
+      if (s.sheetConfig) config.sheetConfig = { ...config.sheetConfig, ...s.sheetConfig };
+      if (s.userInfo) config.userInfo = { ...config.userInfo, ...s.userInfo };
+      if (s.sheetSyncEnabled !== undefined) config.sheetSyncEnabled = s.sheetSyncEnabled;
+      if (s.calId !== undefined) config.calId = s.calId;
+      if (s.calEnabled !== undefined) config.calEnabled = s.calEnabled;
+      if (s.calAutoSync !== undefined) config.calAutoSync = s.calAutoSync;
+      if (s.unpaidRemindDays !== undefined) config.unpaidRemindDays = s.unpaidRemindDays;
+      if (s.backupRemindDays !== undefined) config.backupRemindDays = s.backupRemindDays;
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+
+      // 重新載入所有 UI
+      loadUserInfoUI();
+      loadSheetConfigUI();
+      loadCalendarConfigUI();
+      updateSheetSyncBadge();
+      document.getElementById('cfg-unpaid-days').textContent = config.unpaidRemindDays;
+      document.getElementById('cfg-unpaid-days-input').value = config.unpaidRemindDays;
+      render();
+
+      // 引導下一步
+      const hasToken = !!config.sheetConfig?.apiToken;
+      if (hasToken) {
+        if (confirm('✓ 設定已匯入！\n\n下一步建議：從 Sheet 拉取最新資料到本機。\n\n要現在拉取嗎？')) {
+          pullFromSheet(false);
+        }
+      } else {
+        toast('✓ 設定已匯入');
+      }
+    } catch (err) {
+      alert('檔案格式錯誤：' + err.message);
+    }
+  };
+  r.readAsText(f);
+}
+
 // ============== Sheet 雙向同步 ==============
 let syncTimer = null;
 let syncStatus = 'idle';  // idle | syncing | synced | offline | error
