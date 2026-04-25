@@ -40,7 +40,7 @@ let config = {
   sheetSyncEnabled: false,
   sheetPendingPush: false,  // 有待同步但離線時為 true
   cloudFirstMode: false,    // 雲端優先：啟動必須 pull 成功，操作前必檢查
-  autoPollInterval: 60      // 自動 polling 雲端 metadata 間隔（秒，0 = 關閉）
+  autoPollInterval: 60,     // 自動 polling 雲端 metadata 間隔（秒，0 = 關閉）
 
   // Google Calendar 同步
   calEnabled: false,
