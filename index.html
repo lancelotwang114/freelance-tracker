@@ -156,6 +156,28 @@
       <h3>業主貢獻排行</h3>
       <div id="rev-client-rank"></div>
     </div>
+
+    <div class="card">
+      <h3>🥧 案件類型分佈</h3>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">依「類型/標籤」欄位分類已收款案件（沒填類型 = 未分類）</p>
+      <div id="rev-tag-pie"></div>
+    </div>
+
+    <div class="card">
+      <h3>🔥 工作熱圖（最近 365 天）</h3>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">每格代表一天的收款金額，顏色越深 = 那天越忙</p>
+      <div id="rev-heatmap"></div>
+    </div>
+
+    <div class="card">
+      <h3>📋 月度業主彙整</h3>
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap;">
+        <label style="margin: 0;">月份：</label>
+        <select id="report-month" onchange="renderMonthlyReport()" class="revenue-select"></select>
+        <button class="btn btn-outline btn-sm" onclick="exportMonthlyReportCSV()">📊 匯出 CSV</button>
+      </div>
+      <div id="rev-monthly-report"></div>
+    </div>
   </section>
 
   <!-- Clients -->

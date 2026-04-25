@@ -253,6 +253,116 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 .cal-chip.spans { font-style: italic; }
 .cal-chip.spans::before { content: "⏳ "; font-style: normal; }
 
+/* 派圖 */
+.pie-container {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.pie-svg { flex: 0 0 auto; }
+.pie-legend {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pie-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.pie-legend-item:last-child { border-bottom: none; }
+.pie-legend-dot {
+  width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0;
+}
+.pie-legend-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pie-legend-amt {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pie-legend-pct {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+/* 熱圖 */
+.heatmap-container {
+  overflow-x: auto;
+  padding: 4px 0;
+}
+.heatmap-svg { display: block; min-width: 600px; }
+.heatmap-legend {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.heatmap-legend-cell {
+  width: 11px; height: 11px; border-radius: 2px;
+}
+
+/* 月度報表 */
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.report-table th, .report-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.report-table th {
+  background: var(--bg);
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-table td.num, .report-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.report-table tr.report-total {
+  background: var(--bg);
+  font-weight: 700;
+}
+.report-table tr.report-total td { border-top: 2px solid var(--text); }
+
+/* 業主 mini timeline */
+.client-timeline {
+  display: flex;
+  gap: 1px;
+  height: 16px;
+  margin-top: 6px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.client-timeline-cell {
+  flex: 1;
+  position: relative;
+}
+.client-timeline-cell.has-job {
+  background-color: var(--success);
+}
+
 .commission-info {
   display: inline-block;
   font-size: 11px;

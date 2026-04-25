@@ -869,6 +869,31 @@ function renderClients() {
     const commissionInfo = (c.commissionRate > 0 && introducer)
       ? `<span class="commission-info">介紹人 ${escapeHtml(introducer.name)} · 抽成 ${c.commissionRate}%</span>`
       : '';
+    // 近 12 個月活躍度時間軸
+    const tlMonths = [];
+    const tlNow = new Date();
+    tlNow.setDate(1);
+    for (let i = 11; i >= 0; i--) {
+      const dd = new Date(tlNow);
+      dd.setMonth(dd.getMonth() - i);
+      const mmKey = dd.getFullYear() + '-' + String(dd.getMonth()+1).padStart(2,'0');
+      tlMonths.push(mmKey);
+    }
+    const tlAmounts = {};
+    clientJobs.forEach(j => {
+      const mm = jobBelongMonth(j);
+      tlAmounts[mm] = (tlAmounts[mm] || 0) + (+j.amount||0);
+    });
+    const tlMax = Math.max(...tlMonths.map(m => tlAmounts[m] || 0), 1);
+    const timelineHtml = `<div class="client-timeline" title="近 12 個月活躍度">${
+      tlMonths.map(m => {
+        const amt = tlAmounts[m] || 0;
+        const pct = amt > 0 ? Math.max(0.1, amt / tlMax) : 0;
+        const opacity = pct > 0 ? Math.max(0.25, pct).toFixed(2) : 0;
+        return `<div class="client-timeline-cell ${amt?'has-job':''}" title="${m}: ${fmt(amt)}" style="background-color: ${amt ? c.color : 'transparent'}; opacity: ${amt ? opacity : 1};"></div>`;
+      }).join('')
+    }</div>`;
+
     return `<div style="padding: 14px 0; border-bottom: 1px solid var(--border);">
       <div class="client-header">
         <div class="dot" style="background:${c.color}; width: 12px; height: 12px;"></div>
@@ -882,6 +907,7 @@ function renderClients() {
       <div style="font-size: 13px; color: var(--muted); margin-bottom: 4px;">
         本月已收 ${fmt(mPaid)} · 待收 ${fmt(mUnpaid)} · 累計 ${clientJobs.length} 筆
       </div>
+      ${timelineHtml}
       <div style="display:flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
         <button class="btn btn-outline btn-sm" onclick="setFilter('clientId','${c.id}'); switchTab('jobs')">查看案件</button>
         <button class="btn btn-outline btn-sm" onclick="gotoInvoice('${c.id}')">產生請款單</button>
@@ -975,6 +1001,11 @@ function renderRevenue() {
 
   // 業主貢獻排行
   renderClientRank(jobs, revenueState.range === 'all' ? null : displayKeys);
+
+  // 新增的三張卡片
+  renderTagPie();
+  renderHeatmap();
+  renderMonthlyReport();
 }
 
 function fillEmptyBuckets(keys, mode) {
@@ -1191,6 +1222,290 @@ function fmtShort(n) {
   if (n >= 10000) return Math.round(n/1000) + 'k';
   if (n >= 1000) return (n/1000).toFixed(1).replace('.0','') + 'k';
   return String(n);
+}
+
+// ============== 案件類型派圖 ==============
+function renderTagPie() {
+  const box = document.getElementById('rev-tag-pie');
+  if (!box) return;
+
+  const tagAmounts = {};
+  activeJobs().forEach(j => {
+    if (!j.paid) return;
+    const tag = j.tag || '未分類';
+    tagAmounts[tag] = (tagAmounts[tag] || 0) + jobNetAmount(j);
+  });
+
+  const entries = Object.entries(tagAmounts).filter(([_,v]) => v > 0).sort((a,b) => b[1] - a[1]);
+  if (!entries.length) {
+    box.innerHTML = '<div class="empty" style="padding: 20px;"><div style="font-size: 13px;">沒有已收款的案件</div></div>';
+    return;
+  }
+
+  const total = entries.reduce((s, [_,v]) => s + v, 0);
+  const cx = 90, cy = 90, r = 78;
+  const colors = ['#2563eb','#10b981','#f59e0b','#ec4899','#8b5cf6','#14b8a6','#ef4444','#eab308','#0891b2','#7c3aed','#92400e','#64748b'];
+
+  let startAngle = -Math.PI / 2;
+  const slices = entries.map(([tag, amt], i) => {
+    const angle = (amt / total) * 2 * Math.PI;
+    const endAngle = startAngle + angle;
+    let path;
+    if (entries.length === 1) {
+      path = `M ${cx-r} ${cy} A ${r} ${r} 0 1 1 ${cx+r-0.01} ${cy} A ${r} ${r} 0 1 1 ${cx-r} ${cy}`;
+    } else {
+      const x1 = cx + r * Math.cos(startAngle);
+      const y1 = cy + r * Math.sin(startAngle);
+      const x2 = cx + r * Math.cos(endAngle);
+      const y2 = cy + r * Math.sin(endAngle);
+      const largeArc = angle > Math.PI ? 1 : 0;
+      path = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+    }
+    const slice = `<path d="${path}" fill="${colors[i % colors.length]}" stroke="#fff" stroke-width="1.5"><title>${escapeHtml(tag)}：${fmt(amt)} (${(amt/total*100).toFixed(0)}%)</title></path>`;
+    startAngle = endAngle;
+    return slice;
+  });
+
+  const legend = entries.map(([tag, amt], i) => `
+    <div class="pie-legend-item">
+      <div class="pie-legend-dot" style="background: ${colors[i % colors.length]};"></div>
+      <span class="pie-legend-name">${escapeHtml(tag)}</span>
+      <span class="pie-legend-amt">${fmt(amt)}</span>
+      <span class="pie-legend-pct">${(amt/total*100).toFixed(0)}%</span>
+    </div>
+  `).join('');
+
+  box.innerHTML = `<div class="pie-container">
+    <svg class="pie-svg" viewBox="0 0 180 180" width="180" height="180" xmlns="http://www.w3.org/2000/svg">${slices.join('')}</svg>
+    <div class="pie-legend">${legend}</div>
+  </div>`;
+}
+
+// ============== 工作熱圖 (GitHub-style) ==============
+function renderHeatmap() {
+  const box = document.getElementById('rev-heatmap');
+  if (!box) return;
+
+  const cell = 11;
+  const gap = 2;
+  const weeks = 53;
+  const W = (cell + gap) * weeks + 30;
+  const H = (cell + gap) * 7 + 24;
+
+  // 計算每天的收款金額
+  const byDay = {};
+  activeJobs().forEach(j => {
+    if (!j.paid || !j.paidAt) return;
+    byDay[j.paidAt] = (byDay[j.paidAt] || 0) + jobNetAmount(j);
+  });
+
+  const today = new Date();
+  // 找開始日：今天 - 365 天，往前找到那週的週日
+  const start = new Date(today);
+  start.setDate(start.getDate() - 365);
+  while (start.getDay() !== 0) start.setDate(start.getDate() - 1);
+
+  const max = Math.max(...Object.values(byDay), 1);
+  const colors = ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'];
+
+  const cells = [];
+  const monthLabels = [];
+  let lastMonth = -1;
+
+  const todayStrV = todayStr();
+  for (let w = 0; w < weeks; w++) {
+    for (let d = 0; d < 7; d++) {
+      const cur = new Date(start);
+      cur.setDate(start.getDate() + w*7 + d);
+      const ds = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,'0')}-${String(cur.getDate()).padStart(2,'0')}`;
+      if (ds > todayStrV) continue;
+      const amt = byDay[ds] || 0;
+      const intensity = amt > 0 ? Math.min(4, Math.ceil(amt / max * 4)) : 0;
+      const x = w * (cell+gap) + 22;
+      const y = d * (cell+gap) + 18;
+      const isToday = ds === todayStrV;
+      cells.push(`<rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="2" fill="${colors[intensity]}" ${isToday?'stroke="var(--primary)" stroke-width="1.5"':''}><title>${ds}　${fmt(amt)}</title></rect>`);
+    }
+    // 月份 label（每個月的第一個出現）
+    const cur = new Date(start);
+    cur.setDate(start.getDate() + w*7);
+    if (cur.getMonth() !== lastMonth) {
+      lastMonth = cur.getMonth();
+      monthLabels.push(`<text x="${w * (cell+gap) + 22}" y="14" fill="#8a8f98" font-size="10">${cur.getMonth()+1}月</text>`);
+    }
+  }
+
+  // 星期 label
+  const dowLabels = [];
+  ['', '一', '', '三', '', '五', ''].forEach((d, i) => {
+    if (d) dowLabels.push(`<text x="0" y="${i*(cell+gap)+27}" fill="#8a8f98" font-size="9">${d}</text>`);
+  });
+
+  // 圖例
+  const legendCells = colors.map(c => `<div class="heatmap-legend-cell" style="background:${c}"></div>`).join('');
+
+  box.innerHTML = `<div class="heatmap-container">
+    <svg class="heatmap-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+      ${monthLabels.join('')}
+      ${dowLabels.join('')}
+      ${cells.join('')}
+    </svg>
+  </div>
+  <div class="heatmap-legend">
+    <span>少</span>${legendCells}<span>多</span>
+  </div>`;
+}
+
+// ============== 月度業主彙整 ==============
+function renderMonthlyReport() {
+  const sel = document.getElementById('report-month');
+  if (!sel) return;
+
+  // 填月份選單
+  const allMonths = [...new Set(state.jobs.map(j => jobBelongMonth(j)).filter(Boolean))].sort().reverse();
+  if (!allMonths.length) allMonths.push(thisMonth());
+  const cur = sel.value;
+  sel.innerHTML = allMonths.map(m => `<option value="${m}">${m}</option>`).join('');
+  sel.value = cur && allMonths.includes(cur) ? cur : (allMonths[0] || thisMonth());
+
+  const month = sel.value;
+  const monthJobs = activeJobs().filter(j => jobBelongMonth(j) === month);
+
+  const box = document.getElementById('rev-monthly-report');
+  if (!box) return;
+
+  if (!monthJobs.length) {
+    box.innerHTML = '<div class="empty" style="padding: 20px;"><div style="font-size: 13px;">該月份沒有資料</div></div>';
+    return;
+  }
+
+  // 依業主彙整
+  const byClient = {};
+  monthJobs.forEach(j => {
+    const c = getClient(j.clientId);
+    const cid = j.clientId || 'unknown';
+    if (!byClient[cid]) {
+      byClient[cid] = {
+        client: c, count: 0,
+        gross: 0,        // 案件總額（未扣分潤）
+        commission: 0,   // 給介紹人的部分
+        net: 0,          // 實收
+        paidNet: 0,      // 已收款（實收）
+        unpaidNet: 0,    // 待收款（實收）
+        pendingNet: 0    // 進行中（實收）
+      };
+    }
+    const r = byClient[cid];
+    r.count++;
+    r.gross += +j.amount || 0;
+    r.commission += jobCommission(j);
+    r.net += jobNetAmount(j);
+    if (j.paid) r.paidNet += jobNetAmount(j);
+    else if (j.done) r.unpaidNet += jobNetAmount(j);
+    else r.pendingNet += jobNetAmount(j);
+  });
+
+  const rows = Object.values(byClient).sort((a,b) => b.net - a.net);
+
+  // 加總
+  const totals = rows.reduce((acc, r) => {
+    acc.count += r.count;
+    acc.gross += r.gross;
+    acc.commission += r.commission;
+    acc.net += r.net;
+    acc.paidNet += r.paidNet;
+    acc.unpaidNet += r.unpaidNet;
+    acc.pendingNet += r.pendingNet;
+    return acc;
+  }, { count: 0, gross: 0, commission: 0, net: 0, paidNet: 0, unpaidNet: 0, pendingNet: 0 });
+
+  const showCommission = totals.commission > 0;
+
+  box.innerHTML = `<div style="overflow-x: auto;">
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th>業主</th>
+          <th class="num">案件</th>
+          <th class="num">原始金額</th>
+          ${showCommission ? '<th class="num">分潤</th><th class="num">實收</th>' : ''}
+          <th class="num">已收</th>
+          <th class="num">待收</th>
+          <th class="num">進行中</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(r => {
+          const name = r.client ? r.client.name : '(已刪除)';
+          const color = r.client ? r.client.color : '#ccc';
+          return `<tr>
+            <td><span class="dot" style="display:inline-block;background:${color};width:8px;height:8px;border-radius:50%;margin-right:6px;"></span>${escapeHtml(name)}</td>
+            <td class="num">${r.count}</td>
+            <td class="num">${fmt(r.gross)}</td>
+            ${showCommission ? `<td class="num" style="color: var(--warning);">${r.commission ? '-'+fmt(r.commission) : '—'}</td><td class="num"><b>${fmt(r.net)}</b></td>` : ''}
+            <td class="num" style="color: var(--success);">${fmt(r.paidNet)}</td>
+            <td class="num" style="color: var(--warning);">${fmt(r.unpaidNet)}</td>
+            <td class="num" style="color: var(--muted);">${fmt(r.pendingNet)}</td>
+          </tr>`;
+        }).join('')}
+        <tr class="report-total">
+          <td>合計</td>
+          <td class="num">${totals.count}</td>
+          <td class="num">${fmt(totals.gross)}</td>
+          ${showCommission ? `<td class="num" style="color: var(--warning);">${totals.commission ? '-'+fmt(totals.commission) : '—'}</td><td class="num">${fmt(totals.net)}</td>` : ''}
+          <td class="num" style="color: var(--success);">${fmt(totals.paidNet)}</td>
+          <td class="num" style="color: var(--warning);">${fmt(totals.unpaidNet)}</td>
+          <td class="num" style="color: var(--muted);">${fmt(totals.pendingNet)}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function exportMonthlyReportCSV() {
+  const sel = document.getElementById('report-month');
+  if (!sel) return;
+  const month = sel.value;
+  const monthJobs = activeJobs().filter(j => jobBelongMonth(j) === month);
+
+  if (!monthJobs.length) { toast('該月沒有資料'); return; }
+
+  const headers = ['業主', '案件數', '原始金額', '分潤', '實收', '已收款', '待收款', '進行中'];
+
+  // 依業主彙整
+  const byClient = {};
+  monthJobs.forEach(j => {
+    const c = getClient(j.clientId);
+    const cid = j.clientId || 'unknown';
+    if (!byClient[cid]) byClient[cid] = { name: c?c.name:'(已刪除)', count: 0, gross: 0, commission: 0, net: 0, paid: 0, unpaid: 0, pending: 0 };
+    const r = byClient[cid];
+    r.count++;
+    r.gross += +j.amount || 0;
+    r.commission += jobCommission(j);
+    r.net += jobNetAmount(j);
+    if (j.paid) r.paid += jobNetAmount(j);
+    else if (j.done) r.unpaid += jobNetAmount(j);
+    else r.pending += jobNetAmount(j);
+  });
+
+  const rows = Object.values(byClient).sort((a,b) => b.net - a.net).map(r =>
+    [r.name, r.count, r.gross, r.commission, r.net, r.paid, r.unpaid, r.pending]);
+
+  const csv = '﻿' + [
+    headers.join(','),
+    ...rows.map(r => r.map(c => {
+      const s = String(c);
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    }).join(','))
+  ].join('\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `monthly-report-${month}.csv`;
+  a.click();
+  toast(`✓ 已匯出 ${month} 月度報表`);
 }
 
 function renderClientRank(jobs, keysFilter) {
