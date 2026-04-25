@@ -1,5 +1,5 @@
 /* =========================================
-   外包收益與排程管理 - 主程式 v1.0
+   外包收益與排程管理 - 主程式 v1.4
    ========================================= */
 
 // ============== Data Layer ==============
@@ -40,7 +40,8 @@ let config = {
   sheetSyncEnabled: false,
   sheetPendingPush: false,  // 有待同步但離線時為 true
   cloudFirstMode: false,    // 雲端優先：啟動必須 pull 成功，操作前必檢查
-  autoPollInterval: 60,     // 自動 polling 雲端 metadata 間隔（秒，0 = 關閉）
+  autoPollEnabled: true,    // 自動偵測雲端（預設啟用）
+  autoPollInterval: 30,     // 固定 30 秒（不對外開放設定）
 
   // Google Calendar 同步
   calEnabled: false,
@@ -2766,25 +2767,47 @@ function setSyncStatus(status, err) {
   syncError = err || null;
   const el = document.getElementById('sync-indicator');
   if (!el) return;
-  // 離線狀態：顯示待同步筆數
-  const pendingNote = config.sheetPendingPush ? ' (待同步)' : '';
-  const map = {
-    idle:    { icon: '☁️',  text: '未連雲端',  cls: 'idle' },
-    syncing: { icon: '⏳',  text: '同步中',     cls: 'syncing' },
-    synced:  { icon: '✓',   text: '已同步',     cls: 'synced' },
-    offline: { icon: '⚠',   text: '離線' + pendingNote, cls: 'offline' },
-    error:   { icon: '✗',   text: '連線失敗',   cls: 'error' }
-  };
-  const s = map[status] || map.idle;
-  el.className = `sync-indicator sync-${s.cls}`;
-  el.innerHTML = `${s.icon} ${s.text}`;
-  // tooltip 顯示詳細資訊
   const cfg = config.sheetConfig || {};
+  const verText = cfg.cloudVersion ? `v${cfg.cloudVersion}` : '';
+  const timeText = cfg.cloudLastModifiedAt
+    ? new Date(cfg.cloudLastModifiedAt).toLocaleTimeString('zh-TW', {hour: '2-digit', minute: '2-digit', hour12: false})
+    : '';
+  const pendingNote = config.sheetPendingPush ? ' (待同步)' : '';
+
+  let text = '';
+  let cls = 'idle';
+  let icon = '☁️';
+
+  switch (status) {
+    case 'syncing':
+      icon = '⏳'; cls = 'syncing'; text = '同步中…';
+      break;
+    case 'synced':
+      icon = '✓'; cls = 'synced';
+      text = verText && timeText ? `${verText} · ${timeText}` : '已同步';
+      break;
+    case 'offline':
+      icon = '⚠'; cls = 'offline';
+      text = '離線' + pendingNote;
+      break;
+    case 'error':
+      icon = '✗'; cls = 'error'; text = '失敗';
+      break;
+    case 'idle':
+    default:
+      icon = '☁️'; cls = 'idle'; text = '未連雲端';
+  }
+  el.className = `sync-indicator sync-${cls}`;
+  el.innerHTML = `${icon} ${text}`;
+
+  // tooltip 顯示完整資訊
   const lines = [];
-  if (cfg.lastSyncAt) lines.push(`上次推送：${new Date(cfg.lastSyncAt).toLocaleString('zh-TW')}`);
-  if (cfg.lastPullAt) lines.push(`上次下載：${new Date(cfg.lastPullAt).toLocaleString('zh-TW')}`);
+  if (cfg.cloudVersion) lines.push(`雲端版本：v${cfg.cloudVersion}`);
   if (cfg.cloudLastModifiedAt) lines.push(`雲端最新：${new Date(cfg.cloudLastModifiedAt).toLocaleString('zh-TW')}`);
-  if (cfg.cloudVersion) lines.push(`雲端版號：v${cfg.cloudVersion}`);
+  if (cfg.lastSyncAt) lines.push(`上次上傳：${new Date(cfg.lastSyncAt).toLocaleString('zh-TW')}`);
+  if (cfg.lastPullAt) lines.push(`上次下載：${new Date(cfg.lastPullAt).toLocaleString('zh-TW')}`);
+  if (config.cloudFirstMode) lines.push('☁️ 雲端優先模式 ON');
+  if (config.autoPollEnabled !== false) lines.push('🔄 自動偵測 ON（每 30 秒）');
   if (err) lines.push(`錯誤：${err}`);
   el.title = lines.join('\n') || '尚未同步';
 }
@@ -3176,20 +3199,19 @@ function saveCloudFirstMode() {
   }
 }
 
-function saveAutoPoll() {
-  const v = +document.getElementById('auto-poll').value || 0;
-  config.autoPollInterval = Math.max(0, Math.min(600, v));
+function saveAutoPollToggle() {
+  config.autoPollEnabled = document.getElementById('auto-poll-toggle').checked;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   setupAutoPoll();
-  toast(config.autoPollInterval > 0 ? `✓ 每 ${config.autoPollInterval} 秒檢查一次` : '已關閉自動偵測');
+  toast(config.autoPollEnabled ? '✓ 已啟用自動偵測（每 30 秒）' : '已關閉自動偵測');
 }
 
 let autoPollTimer = null;
 function setupAutoPoll() {
   if (autoPollTimer) { clearInterval(autoPollTimer); autoPollTimer = null; }
-  if (!config.autoPollInterval || config.autoPollInterval <= 0) return;
+  if (!config.autoPollEnabled) return;
   if (!config.sheetConfig?.apiUrl || !config.sheetConfig?.apiToken) return;
-  autoPollTimer = setInterval(checkCloudForUpdate, config.autoPollInterval * 1000);
+  autoPollTimer = setInterval(checkCloudForUpdate, 30 * 1000);
 }
 
 async function checkCloudForUpdate() {
@@ -3220,7 +3242,7 @@ function loadSheetConfigUI() {
   g('sheet-api').value = config.sheetConfig?.apiUrl || '';
   g('sheet-url').value = config.sheetConfig?.sheetUrl || '';
   if (g('cloud-first')) g('cloud-first').checked = !!config.cloudFirstMode;
-  if (g('auto-poll')) g('auto-poll').value = config.autoPollInterval ?? 60;
+  if (g('auto-poll-toggle')) g('auto-poll-toggle').checked = config.autoPollEnabled !== false;
 }
 
 function saveSheetConfig() {

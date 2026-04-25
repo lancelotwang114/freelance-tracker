@@ -1289,7 +1289,7 @@ input:focus, select:focus, textarea:focus {
 .sync-indicator.sync-offline { color: var(--warning); background: var(--warning-light); border-color: var(--warning); }
 .sync-indicator.sync-error { color: var(--danger); background: var(--danger-light); border-color: var(--danger); }
 @media (max-width: 480px) {
-  .sync-indicator { font-size: 11px; padding: 4px 8px; }
+  .sync-indicator { font-size: 10px; padding: 3px 6px; }
 }
 
 /* ==================== Utilities ==================== */
