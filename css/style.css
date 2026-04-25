@@ -212,6 +212,24 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 }
 .bulk-checkbox.checked::after { content: "✓"; color: #fff; font-weight: 700; }
 
+/* 備份歷史 row */
+.snapshot-row {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.snapshot-row.recent { background: var(--success-light); border-color: var(--success); }
+.snapshot-row.target { background: var(--warning-light); border-color: var(--warning); }
+.snapshot-info { flex: 1; min-width: 200px; }
+.snapshot-time { font-weight: 600; font-size: 14px; }
+.snapshot-stats { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.snapshot-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
 /* 提醒高亮動畫 */
 @keyframes highlight-flash {
   0%   { background: var(--warning-light); transform: translateX(0); }

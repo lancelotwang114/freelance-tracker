@@ -10,7 +10,7 @@ const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14
 let state = {
   clients: [],
   jobs: [],
-  filters: { clientId: 'all', month: 'current', status: 'all', tag: 'all' }
+  filters: { clientId: 'all', month: 'current', status: 'all', tag: 'all', expandedYear: null }
 };
 
 let config = {
@@ -33,7 +33,9 @@ let config = {
     apiUrl: '',
     apiToken: '',
     lastSyncAt: null,
-    lastPullAt: null
+    lastPullAt: null,
+    cloudVersion: 0,        // 雲端版本（每次 pull/push 後更新）
+    cloudLastModifiedAt: null  // 雲端最後修改時間
   },
   sheetSyncEnabled: false,
   sheetPendingPush: false,  // 有待同步但離線時為 true
@@ -57,6 +59,9 @@ let config = {
 // 行事曆當前月份
 let calCursor = new Date();
 calCursor.setDate(1);
+
+// 業主清單展開狀態（哪些業主展開）
+let expandedClients = new Set();
 
 // 收益頁模式
 let revenueState = {
@@ -314,20 +319,31 @@ function bulkMarkDone() {
 
 function bulkMarkPaid() {
   if (!bulkSelected.size) { toast('沒有選任何案件'); return; }
-  if (!confirm(`將選中的 ${bulkSelected.size} 筆案件標記為「已收款」（含完成）？`)) return;
+  // 讓使用者選收款日
+  const dateStr = prompt(
+    `將選中的 ${bulkSelected.size} 筆案件標記為「已收款」\n\n` +
+    `收款日期（YYYY-MM-DD），預設今日：`,
+    todayStr()
+  );
+  if (!dateStr) { toast('已取消'); return; }
+  // 簡單格式檢查
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+    alert('日期格式錯誤，請用 YYYY-MM-DD');
+    return;
+  }
+  const useDate = dateStr.trim();
   let n = 0;
   state.jobs.forEach(j => {
     if (bulkSelected.has(j.id) && !j.paid) {
-      j.done = true;
       j.paid = true;
-      j.doneAt = j.doneAt || todayStr();
-      j.paidAt = todayStr();
+      j.paidAt = useDate;
+      // 解耦：批次標記收款不強制完成
       n++;
     }
   });
   bulkSelected.clear();
   save(); render();
-  toast(`💰 ${n} 筆已標記收款`);
+  toast(`💰 ${n} 筆已標記收款 (${useDate})`, 3500);
 }
 
 function bulkDelete() {
@@ -689,8 +705,14 @@ function jobRow(j) {
 // ============== Jobs Tab ==============
 function renderJobs() {
   const fb = document.getElementById('job-filter');
-  const months = ['current','all', ...[...new Set(state.jobs.map(j => getMonth(j.date)).filter(Boolean))].sort().reverse()];
-  const monthLabels = { current: '本月', all: '全部月份' };
+  // 年/月階層式篩選：列出最近 5 年，點開後展開該年的月份
+  const allMonths = [...new Set(state.jobs.map(j => getMonth(j.date)).filter(Boolean))].sort().reverse();
+  const allYears = [...new Set(allMonths.map(m => m.slice(0,4)))].sort().reverse();
+  const recentYears = allYears.slice(0, 5);  // 最近 5 年
+  const expandedY = state.filters.expandedYear;
+  // 月份篩選 chips（依展開年份顯示）
+  const monthChips = expandedY ? allMonths.filter(m => m.startsWith(expandedY + '-')) : [];
+
   const statusOptions = [
     { v: 'all', label: '全部狀態' },
     { v: 'pending', label: '未完成' },
@@ -700,22 +722,63 @@ function renderJobs() {
     { v: 'cancelled', label: '🚫 已取消' }
   ];
   const usedTags = getUsedTags();
+  // 第一排：本月、全部、各年份
+  const yearChips = `<button class="chip ${state.filters.month==='current'?'active':''}" onclick="setFilter('month','current')">本月</button>` +
+    `<button class="chip ${state.filters.month==='all'?'active':''}" onclick="setFilter('month','all')">全部</button>` +
+    recentYears.map(y => {
+      const isExpanded = expandedY === y;
+      const isActive = state.filters.month?.startsWith(y);
+      return `<button class="chip ${isActive?'active':''}" onclick="toggleYearExpand('${y}')">${y} ${isExpanded?'▼':'▶'}</button>`;
+    }).join('') +
+    `<button class="chip ${state.filters.month==='custom-range'?'active':''}" onclick="openCustomMonthFilter()">📌 自訂範圍</button>`;
+
+  // 第二排：展開的年份顯示其月份
+  const monthSubChips = expandedY
+    ? '<div style="display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 0 0 24px;">' +
+      monthChips.map(m => `<button class="chip ${state.filters.month===m?'active':''}" onclick="setFilter('month','${m}')">${m.slice(5)}月</button>`).join('') +
+      '</div>'
+    : '';
+
   fb.innerHTML =
-    '<span class="filter-bar-label">月份</span>' +
-    months.map(m => `<button class="chip ${state.filters.month===m?'active':''}" onclick="setFilter('month','${m}')">${monthLabels[m]||m}</button>`).join('') +
-    '<span class="filter-bar-label" style="margin-left: 6px;">狀態</span>' +
-    statusOptions.map(s => `<button class="chip ${state.filters.status===s.v?'active':''}" onclick="setFilter('status','${s.v}')">${s.label}</button>`).join('') +
-    '<span class="filter-bar-label" style="margin-left: 6px;">業主</span>' +
-    `<button class="chip ${state.filters.clientId==='all'?'active':''}" onclick="setFilter('clientId','all')">全部</button>` +
-    state.clients.map(c => `<button class="chip ${state.filters.clientId===c.id?'active':''}" onclick="setFilter('clientId','${c.id}')" style="${state.filters.clientId===c.id?'':'border-left: 3px solid '+c.color+';'}">${escapeHtml(c.name)}</button>`).join('') +
-    (usedTags.length ? '<span class="filter-bar-label" style="margin-left: 6px;">類型</span>' +
-      `<button class="chip ${state.filters.tag==='all'?'active':''}" onclick="setFilter('tag','all')">全部</button>` +
-      usedTags.map(t => `<button class="chip ${state.filters.tag===t?'active':''}" onclick="setFilter('tag','${escapeHtml(t)}')">${escapeHtml(t)}</button>`).join('')
-    : '');
+    '<div style="display: flex; flex-direction: column; gap: 4px; width: 100%;">' +
+      '<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">' +
+        '<span class="filter-bar-label">月份</span>' + yearChips +
+      '</div>' +
+      monthSubChips +
+      '<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">' +
+        '<span class="filter-bar-label">狀態</span>' +
+        statusOptions.map(s => `<button class="chip ${state.filters.status===s.v?'active':''}" onclick="setFilter('status','${s.v}')">${s.label}</button>`).join('') +
+      '</div>' +
+      '<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">' +
+        '<span class="filter-bar-label">業主</span>' +
+        `<button class="chip ${state.filters.clientId==='all'?'active':''}" onclick="setFilter('clientId','all')">全部</button>` +
+        state.clients.map(c => `<button class="chip ${state.filters.clientId===c.id?'active':''}" onclick="setFilter('clientId','${c.id}')" style="${state.filters.clientId===c.id?'':'border-left: 3px solid '+c.color+';'}">${escapeHtml(c.name)}</button>`).join('') +
+      '</div>' +
+      (usedTags.length
+        ? '<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">' +
+          '<span class="filter-bar-label">類型</span>' +
+          `<button class="chip ${state.filters.tag==='all'?'active':''}" onclick="setFilter('tag','all')">全部</button>` +
+          usedTags.map(t => `<button class="chip ${state.filters.tag===t?'active':''}" onclick="setFilter('tag','${escapeHtml(t)}')">${escapeHtml(t)}</button>`).join('') +
+          '</div>'
+        : '') +
+    '</div>';
 
   let jobs = [...state.jobs];
-  if (state.filters.month === 'current') jobs = jobs.filter(j => jobBelongMonth(j) === thisMonth());
-  else if (state.filters.month !== 'all') jobs = jobs.filter(j => jobBelongMonth(j) === state.filters.month);
+  const fm = state.filters.month;
+  if (fm === 'current') jobs = jobs.filter(j => jobBelongMonth(j) === thisMonth());
+  else if (fm === 'all') {/* 不過濾 */}
+  else if (fm === 'custom-range' && state.filters.monthFrom && state.filters.monthTo) {
+    const lo = state.filters.monthFrom, hi = state.filters.monthTo;
+    jobs = jobs.filter(j => {
+      const m = jobBelongMonth(j);
+      return m >= lo && m <= hi;
+    });
+  }
+  else if (fm && /^\d{4}$/.test(fm)) {
+    // 整年
+    jobs = jobs.filter(j => jobBelongMonth(j).startsWith(fm + '-'));
+  }
+  else if (fm) jobs = jobs.filter(j => jobBelongMonth(j) === fm);
   if (state.filters.clientId !== 'all') jobs = jobs.filter(j => j.clientId === state.filters.clientId);
   if (state.filters.status !== 'all') jobs = jobs.filter(j => jobStatus(j) === state.filters.status);
   if (state.filters.tag && state.filters.tag !== 'all') jobs = jobs.filter(j => j.tag === state.filters.tag);
@@ -874,6 +937,40 @@ function quickAddOnDate(ds) {
 }
 
 // ============== Clients Tab ==============
+function toggleClientExpand(cid) {
+  if (expandedClients.has(cid)) expandedClients.delete(cid);
+  else expandedClients.add(cid);
+  renderClients();
+}
+
+// 案件分頁年度展開
+function toggleYearExpand(y) {
+  if (state.filters.expandedYear === y) {
+    state.filters.expandedYear = null;
+    if (state.filters.month?.startsWith(y)) state.filters.month = 'all';
+  } else {
+    state.filters.expandedYear = y;
+    state.filters.month = y;  // 預設選整年
+  }
+  render();
+}
+
+function openCustomMonthFilter() {
+  const from = prompt('起始月份（YYYY-MM）', state.filters.monthFrom || thisMonth());
+  if (!from) return;
+  const to = prompt('結束月份（YYYY-MM）', state.filters.monthTo || thisMonth());
+  if (!to) return;
+  if (!/^\d{4}-\d{2}$/.test(from) || !/^\d{4}-\d{2}$/.test(to)) {
+    alert('格式錯誤，需要 YYYY-MM');
+    return;
+  }
+  state.filters.month = 'custom-range';
+  state.filters.monthFrom = from <= to ? from : to;
+  state.filters.monthTo = from <= to ? to : from;
+  state.filters.expandedYear = null;
+  render();
+}
+
 function renderClients() {
   const container = document.getElementById('clients-list');
   if (!state.clients.length) { container.innerHTML = emptyState('還沒有業主', '點右下角 + 新增第一個業主'); return; }
@@ -953,8 +1050,36 @@ function renderClients() {
       }).join('')
     }</div>`;
 
+    const isExpanded = expandedClients.has(c.id);
+    const expandIcon = isExpanded ? '▼' : '▶';
+
+    // 展開時顯示該業主的案件清單（最近 50 筆）
+    let expandedJobsHtml = '';
+    if (isExpanded) {
+      const recent = clientJobs.slice().sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0, 50);
+      expandedJobsHtml = `<div style="margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 8px;">
+        <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">
+          最近 ${recent.length} 筆（共 ${clientJobs.length} 筆）
+        </div>
+        ${recent.map(j => {
+          const status = jobStatus(j);
+          const statusBadge = status === 'paid' ? '<span class="badge-status paid">✓已收</span>' :
+                              status === 'prepaid' ? '<span class="badge-status paid">已收·待做</span>' :
+                              status === 'done-unpaid' ? '<span class="badge-status done-unpaid">$待收</span>' :
+                              '<span class="badge-status pending">進行中</span>';
+          return `<div style="display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px;" onclick="event.stopPropagation(); editJob('${j.id}')">
+            <span style="color: var(--muted); min-width: 80px; font-size: 12px;">${j.date || '-'}</span>
+            <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;">${escapeHtml(j.title || '')}</span>
+            ${statusBadge}
+            <span style="font-variant-numeric: tabular-nums; font-weight: 600;">${fmt(+j.amount||0)}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+
     return `<div style="padding: 14px 0; border-bottom: 1px solid var(--border);">
-      <div class="client-header">
+      <div class="client-header" style="cursor: pointer;" onclick="toggleClientExpand('${c.id}')">
+        <span style="color: var(--muted); font-size: 12px; min-width: 16px;">${expandIcon}</span>
         <div class="dot" style="background:${c.color}; width: 12px; height: 12px;"></div>
         <div style="font-weight: 600; flex: 1;">
           ${escapeHtml(c.name)}
@@ -962,12 +1087,13 @@ function renderClients() {
           ${allUnpaid > 0 && !c.prepaidMode ? `<span class="client-owes">待收 ${fmt(allUnpaid)}</span>` : ''}
           ${commissionInfo}
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="editClient('${c.id}')">編輯</button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); editClient('${c.id}')">編輯</button>
       </div>
-      <div style="font-size: 13px; color: var(--muted); margin-bottom: 4px;">
+      <div style="font-size: 13px; color: var(--muted); margin-bottom: 4px; padding-left: 24px;">
         本月已收 ${fmt(mPaid)} · 待收 ${fmt(mUnpaid)} · 累計 ${clientJobs.length} 筆
       </div>
       ${timelineHtml}
+      ${expandedJobsHtml}
       <div style="display:flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
         <button class="btn btn-outline btn-sm" onclick="setFilter('clientId','${c.id}'); switchTab('jobs')">查看案件</button>
         <button class="btn btn-outline btn-sm" onclick="gotoInvoice('${c.id}')">產生請款單</button>
@@ -992,13 +1118,13 @@ function buildRangeOptions() {
   if (!rangeSel) return;
   let html = '';
   if (revenueState.mode === 'year') {
-    html += '<option value="ytd">📅 今年至今</option>';
-    html += '<option value="3">最近 3 年</option>';
-    html += '<option value="5">最近 5 年</option>';
-    html += '<option value="all" selected>全部</option>';
+    // 年度：預設「最近 5 年」（含當年），拿掉「最近 3/5 年」快捷
+    html += '<option value="5" selected>最近 5 年（含當年）</option>';
+    html += '<option value="ytd">📅 今年至今（單一柱）</option>';
+    html += '<option value="all">全部</option>';
     html += '<option disabled>──────────</option>';
     html += '<option value="custom">📌 自訂年份範圍</option>';
-    revenueState.range = 'all';
+    revenueState.range = '5';
   } else {
     html += '<option value="3">最近 3 個月</option>';
     html += '<option value="6">最近 6 個月</option>';
@@ -1010,7 +1136,6 @@ function buildRangeOptions() {
     revenueState.range = '12';
   }
   rangeSel.innerHTML = html;
-  // 隱藏自訂欄位
   document.getElementById('rev-custom-month')?.classList.add('hidden');
   document.getElementById('rev-custom-year')?.classList.add('hidden');
 }
@@ -1117,7 +1242,20 @@ function renderRevenue() {
   } else {
     // 數字 = 最近 N 個
     const n = +r;
-    if (n > 0) displayKeys = filled.slice(-n);
+    if (n > 0) {
+      // 年度模式：固定取「截至當年」的最近 N 年（不超過今年）
+      if (revenueState.mode === 'year') {
+        const thisY = new Date().getFullYear();
+        const wantedYears = [];
+        for (let y = thisY - n + 1; y <= thisY; y++) wantedYears.push(String(y));
+        // filled 中存在的部分，加上當年（即使沒資料也顯示）
+        displayKeys = wantedYears;
+        // 確保 buckets 有當年（沒就建空的）
+        wantedYears.forEach(y => { if (!buckets[y]) buckets[y] = { paid: 0, unpaid: 0, pending: 0 }; });
+      } else {
+        displayKeys = filled.slice(-n);
+      }
+    }
   }
 
   const data = displayKeys.map(k => ({ label: k, ...buckets[k] }));
@@ -1898,6 +2036,8 @@ function openJobModal() {
   document.getElementById('job-done').checked = false;
   document.getElementById('job-paid').checked = false;
   document.getElementById('job-cancelled').checked = false;
+  document.getElementById('job-done-at').value = '';
+  document.getElementById('job-paid-at').value = '';
   refreshTagSuggestions();
   onJobClientChange();
   document.getElementById('job-modal').classList.add('open');
@@ -1952,9 +2092,25 @@ function editJob(id) {
   document.getElementById('job-done').checked = !!j.done;
   document.getElementById('job-paid').checked = !!j.paid;
   document.getElementById('job-cancelled').checked = !!j.cancelled;
+  document.getElementById('job-done-at').value = j.doneAt || '';
+  document.getElementById('job-paid-at').value = j.paidAt || '';
   refreshTagSuggestions();
   onJobClientChange();
   document.getElementById('job-modal').classList.add('open');
+}
+
+// 勾選完成時自動填今日（如果空白）
+function onJobDoneChange() {
+  const checked = document.getElementById('job-done').checked;
+  const dateEl = document.getElementById('job-done-at');
+  if (checked && !dateEl.value) dateEl.value = todayStr();
+  if (!checked) dateEl.value = '';
+}
+function onJobPaidChange() {
+  const checked = document.getElementById('job-paid').checked;
+  const dateEl = document.getElementById('job-paid-at');
+  if (checked && !dateEl.value) dateEl.value = todayStr();
+  if (!checked) dateEl.value = '';
 }
 
 function closeJobModal() {
@@ -1980,17 +2136,36 @@ function saveJob() {
     cancelled: isCancelled
   };
   if (!payload.title) { toast('請輸入案件名稱'); return; }
+  // 新版：手動輸入的 doneAt / paidAt 優先採用
+  const manualDoneAt = document.getElementById('job-done-at').value;
+  const manualPaidAt = document.getElementById('job-paid-at').value;
+
   if (editingJobId) {
     const j = state.jobs.find(x => x.id === editingJobId);
-    // 狀態變更時更新時間戳
-    if (!j.done && payload.done) payload.doneAt = todayStr(); else payload.doneAt = j.doneAt;
-    if (!j.paid && payload.paid) payload.paidAt = todayStr(); else payload.paidAt = j.paidAt;
-    if (!payload.done) { payload.doneAt = null; payload.paid = false; payload.paidAt = null; }
-    if (!payload.paid) payload.paidAt = null;
+    // 完成日：若手動填了用手動值；否則勾起來補今日 / 取消勾就清空
+    if (manualDoneAt && payload.done) {
+      payload.doneAt = manualDoneAt;
+    } else if (!j.done && payload.done) {
+      payload.doneAt = todayStr();
+    } else if (!payload.done) {
+      payload.doneAt = null;
+    } else {
+      payload.doneAt = j.doneAt;
+    }
+    // 收款日：同樣邏輯，但解耦 done/paid（可只勾收款不勾完成）
+    if (manualPaidAt && payload.paid) {
+      payload.paidAt = manualPaidAt;
+    } else if (!j.paid && payload.paid) {
+      payload.paidAt = todayStr();
+    } else if (!payload.paid) {
+      payload.paidAt = null;
+    } else {
+      payload.paidAt = j.paidAt;
+    }
     Object.assign(j, payload);
   } else {
-    payload.doneAt = payload.done ? todayStr() : null;
-    payload.paidAt = payload.paid ? todayStr() : null;
+    payload.doneAt = payload.done ? (manualDoneAt || todayStr()) : null;
+    payload.paidAt = payload.paid ? (manualPaidAt || todayStr()) : null;
     state.jobs.push({ id: uid(), ...payload });
   }
   save(); closeJobModal(); render(); toast('已儲存');
@@ -2589,17 +2764,27 @@ function setSyncStatus(status, err) {
   syncError = err || null;
   const el = document.getElementById('sync-indicator');
   if (!el) return;
+  // 離線狀態：顯示待同步筆數
+  const pendingNote = config.sheetPendingPush ? ' (待同步)' : '';
   const map = {
     idle:    { icon: '☁️',  text: '未連雲端',  cls: 'idle' },
     syncing: { icon: '⏳',  text: '同步中',     cls: 'syncing' },
     synced:  { icon: '✓',   text: '已同步',     cls: 'synced' },
-    offline: { icon: '⚠',   text: '沒網路',     cls: 'offline' },
+    offline: { icon: '⚠',   text: '離線' + pendingNote, cls: 'offline' },
     error:   { icon: '✗',   text: '連線失敗',   cls: 'error' }
   };
   const s = map[status] || map.idle;
   el.className = `sync-indicator sync-${s.cls}`;
   el.innerHTML = `${s.icon} ${s.text}`;
-  el.title = err ? `錯誤：${err}` : (config.sheetConfig?.lastSyncAt ? `上次同步：${config.sheetConfig.lastSyncAt}` : '尚未同步');
+  // tooltip 顯示詳細資訊
+  const cfg = config.sheetConfig || {};
+  const lines = [];
+  if (cfg.lastSyncAt) lines.push(`上次推送：${new Date(cfg.lastSyncAt).toLocaleString('zh-TW')}`);
+  if (cfg.lastPullAt) lines.push(`上次下載：${new Date(cfg.lastPullAt).toLocaleString('zh-TW')}`);
+  if (cfg.cloudLastModifiedAt) lines.push(`雲端最新：${new Date(cfg.cloudLastModifiedAt).toLocaleString('zh-TW')}`);
+  if (cfg.cloudVersion) lines.push(`雲端版號：v${cfg.cloudVersion}`);
+  if (err) lines.push(`錯誤：${err}`);
+  el.title = lines.join('\n') || '尚未同步';
 }
 
 // 切換摺疊卡片
@@ -2635,6 +2820,10 @@ async function pullFromSheet(silent = false) {
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ clients: state.clients, jobs: state.jobs }));
     config.sheetConfig.lastPullAt = data.listedAt || new Date().toISOString();
+    if (data.meta) {
+      config.sheetConfig.cloudVersion = +data.meta.version || 0;
+      config.sheetConfig.cloudLastModifiedAt = data.meta.lastModifiedAt || data.listedAt;
+    }
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
     render();
@@ -2647,22 +2836,58 @@ async function pullFromSheet(silent = false) {
   }
 }
 
-async function pushToSheet(silent = false) {
+async function pushToSheet(silent = false, force = false) {
   const cfg = config.sheetConfig;
   if (!cfg?.apiUrl || !cfg?.apiToken) {
     if (!silent) toast('請先設定 API URL + Token');
     return false;
   }
-  // 注意：sheetSyncEnabled 檢查只在 schedulePush（自動推送）時做，
-  // 手動按按鈕不受限制，方便使用者在「停用」狀態下也能手動操作
   setSyncStatus('syncing');
   if (!silent) toastProgress('⬆️ 上傳到雲端中...');
+
+  // 衝突保護：先比對雲端 metadata
+  if (!force) {
+    try {
+      const metaResp = await fetch(cfg.apiUrl + '?action=getMeta&token=' + encodeURIComponent(cfg.apiToken));
+      const metaData = await metaResp.json();
+      if (metaData.ok && metaData.meta && metaData.meta.lastModifiedAt) {
+        const cloudTime = new Date(metaData.meta.lastModifiedAt);
+        const localCloudTime = cfg.cloudLastModifiedAt ? new Date(cfg.cloudLastModifiedAt) : null;
+        // 雲端比本地記錄的雲端版本還新 → 有別人更新過
+        if (!localCloudTime || cloudTime > localCloudTime) {
+          const msg = `⚠️ 雲端有別處剛更新的資料！\n\n` +
+            `雲端最新：${metaData.meta.lastModifiedAt}（裝置：${metaData.meta.lastDevice || '?'}）\n` +
+            `本地記錄的雲端版本：${cfg.cloudLastModifiedAt || '從未同步'}\n\n` +
+            `雲端內容：${metaData.meta.clientsCount || 0} 業主、${metaData.meta.jobsCount || 0} 案件\n\n` +
+            `若直接上傳，雲端的更新會被你本地的版本覆蓋。建議先取消，按「⬇️ 從雲端下載」拉新版，再做你想做的修改。\n\n` +
+            `仍要強制覆蓋？`;
+          if (!silent && !confirm(msg)) {
+            setSyncStatus('synced');
+            toast('已取消上傳');
+            return false;
+          }
+          if (silent) {
+            // 自動 schedulePush 時不要強制覆蓋，先標記待同步
+            setSyncStatus('offline', '雲端有新版');
+            config.sheetPendingPush = true;
+            localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+            return false;
+          }
+        }
+      }
+    } catch (err) {
+      // 連線錯誤不擋上傳
+      console.warn('Meta check failed', err);
+    }
+  }
+
   try {
     const resp = await fetch(cfg.apiUrl, {
       method: 'POST',
       body: JSON.stringify({
         action: 'save',
         token: cfg.apiToken,
+        deviceLabel: getDeviceLabel(),
         snapshotNote: `from ${getDeviceLabel()}`,
         data: { clients: state.clients, jobs: state.jobs }
       })
@@ -2674,6 +2899,10 @@ async function pushToSheet(silent = false) {
       return false;
     }
     config.sheetConfig.lastSyncAt = data.savedAt;
+    if (data.meta) {
+      config.sheetConfig.cloudVersion = +data.meta.version || 0;
+      config.sheetConfig.cloudLastModifiedAt = data.meta.lastModifiedAt || data.savedAt;
+    }
     config.sheetPendingPush = false;
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
@@ -2709,28 +2938,53 @@ async function enableSheetSync() {
     alert('請先設定 Apps Script URL 並測試連線成功');
     return;
   }
+
+  // 防呆：先檢查雲端有沒有資料
+  toastProgress('🔍 檢查雲端狀態...');
+  let cloudHasData = false;
+  let cloudMeta = null;
+  try {
+    const metaResp = await fetch(cfg.apiUrl + '?action=getMeta&token=' + encodeURIComponent(cfg.apiToken));
+    const metaData = await metaResp.json();
+    if (metaData.ok && metaData.meta) {
+      cloudMeta = metaData.meta;
+      cloudHasData = (+metaData.meta.jobsCount || 0) > 0 || (+metaData.meta.clientsCount || 0) > 0;
+    }
+  } catch (err) {
+    console.warn('Meta check failed', err);
+  }
+
+  // 若雲端有資料但本地沒同步過 → 強制先 pull（避免覆蓋）
+  if (cloudHasData && !cfg.cloudLastModifiedAt) {
+    const pullFirst = confirm(
+      '⚠️ 安全提示：雲端已經有資料，但你這台裝置從沒下載過！\n\n' +
+      `雲端：${cloudMeta.clientsCount || 0} 業主、${cloudMeta.jobsCount || 0} 案件\n` +
+      `本地：${state.clients.length} 業主、${state.jobs.length} 案件\n\n` +
+      '建議流程：\n' +
+      '1. 先「⬇️ 從雲端下載」拉雲端資料\n' +
+      '2. 確認資料正確再啟用自動同步\n\n' +
+      '直接按「確定」會自動先下載 → 再啟用同步\n' +
+      '按「取消」可改手動操作'
+    );
+    if (!pullFirst) return;
+    const pulled = await pullFromSheet(false);
+    if (!pulled) return;
+  }
+
   const msg =
-    '【啟用 Sheet 雙向同步】\n\n' +
-    `即將把本地 ${state.clients.length} 位業主、${state.jobs.length} 筆案件推送到 Sheet。\n\n` +
-    '✅ 安全機制（重要）：\n' +
-    '• Apps Script 會先把 Sheet 目前內容備份到 snapshots 分頁\n' +
-    '• 即使推錯，都可還原回來\n' +
-    '• snapshots 保留最近 20 個版本\n\n' +
-    '啟用後：\n' +
-    '• 每次改動 2 秒內自動推送到 Sheet\n' +
-    '• 開 APP 時自動從 Sheet 拉取最新資料\n' +
-    '• 其他裝置只要填同樣的 URL + Token 即可同步\n\n' +
-    '確定要啟用嗎？';
+    '【啟用雲端自動同步】\n\n' +
+    `本地：${state.clients.length} 業主、${state.jobs.length} 案件\n` +
+    (cloudMeta ? `雲端：${cloudMeta.clientsCount || 0} 業主、${cloudMeta.jobsCount || 0} 案件\n` : '') +
+    '\n啟用後每次改動 2 秒內自動同步。\n推送前會檢查雲端是否有更新，避免覆蓋別處改動。\n\n確定？';
   if (!confirm(msg)) return;
 
-  // 先啟用 flag 再推送
   config.sheetSyncEnabled = true;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 
   const ok = await pushToSheet(false);
   if (ok) {
     updateSheetSyncBadge();
-    alert('✓ 同步已啟用！\n\n之後不用管它，改東西會自動推送。\n\n跨裝置使用：在其他電腦 / 手機打開 APP，到「設定 → Apps Script 後端」填一樣的 URL + Token，然後按「從 Sheet 拉取」，就能看到同樣的資料。');
+    toast('✓ 自動同步已啟用！', 3500);
   } else {
     config.sheetSyncEnabled = false;
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
@@ -2770,15 +3024,83 @@ async function showSnapshotList() {
     const url = cfg.apiUrl + '?action=listSnapshots&token=' + encodeURIComponent(cfg.apiToken);
     const resp = await fetch(url);
     const data = await resp.json();
+    if (!data.ok) { alert('讀取失敗：' + data.error); return; }
+    const list = data.snapshots || [];
+
+    const box = document.getElementById('snapshot-list-modal');
+    if (!list.length) {
+      box.innerHTML = '<div class="empty"><div style="font-size: 13px;">目前沒有備份紀錄</div></div>';
+    } else {
+      box.innerHTML = list.map((s, i) => {
+        const stats = s.stats || {};
+        const cls = i === 0 ? 'recent' : '';
+        const tag = i === 0 ? '<span class="badge-status paid" style="margin-left: 6px;">最新</span>' : '';
+        return `<div class="snapshot-row ${cls}">
+          <div class="snapshot-info">
+            <div class="snapshot-time">${s.timestamp}${tag}</div>
+            <div class="snapshot-stats">
+              ${stats.clients || 0} 業主 · ${stats.jobs || 0} 案件 · 總額 ${fmt(stats.totalAmount || 0)}
+            </div>
+            <div class="snapshot-stats">${escapeHtml(s.note || '—')}</div>
+            <div class="snapshot-stats" style="font-family: monospace;">ID: ${s.id}</div>
+          </div>
+          <div class="snapshot-actions">
+            <button class="btn btn-outline btn-sm" onclick="previewSnapshot('${s.id}')">👁️ 預覽</button>
+            <button class="btn btn-primary btn-sm" onclick="restoreSnapshot('${s.id}')">⏮️ 還原</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    document.getElementById('snapshot-modal').classList.add('open');
+    toast('✓ 載入 ' + list.length + ' 筆備份');
+  } catch (err) {
+    alert('錯誤：' + err.message);
+  }
+}
+
+// 預覽特定 snapshot 內容
+async function previewSnapshot(id) {
+  const cfg = config.sheetConfig;
+  toastProgress('📂 載入預覽...');
+  try {
+    const resp = await fetch(cfg.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'getSnapshot', token: cfg.apiToken, snapshotId: id })
+    });
+    const data = await resp.json();
     if (!data.ok) { alert('失敗：' + data.error); return; }
-    const list = data.snapshots;
-    if (!list.length) { alert('目前沒有任何 snapshot'); return; }
-    const msg = 'Snapshots（最新在上）：\n\n' +
-      list.map((s, i) => `${i+1}. ${s.timestamp}\n   ${s.note}\n   ID: ${s.id}`).join('\n\n') +
-      '\n\n要還原某個 snapshot？輸入它的 ID，取消則關閉。';
-    const id = prompt(msg);
-    if (!id) return;
-    await restoreSnapshot(id.trim());
+    const snap = data.snapshot;
+    const d = snap.data;
+    const clients = d.clients || [];
+    const jobs = d.jobs || [];
+
+    // 統計：負金額案件
+    const negativeJobs = jobs.filter(j => +j.amount < 0);
+    const negativeInfo = negativeJobs.length
+      ? '\n\n⚠️ 含負金額案件 (' + negativeJobs.length + ' 筆)：\n' +
+        negativeJobs.slice(0, 5).map(j => {
+          const c = clients.find(c => c.id === j.clientId);
+          return `  • ${c?.name || '?'} | ${j.title} | ${fmt(+j.amount)}`;
+        }).join('\n')
+      : '';
+
+    // 業主清單
+    const clientList = clients.slice(0, 8).map(c => `  • ${c.name}`).join('\n');
+    const moreClients = clients.length > 8 ? `\n  ...還有 ${clients.length - 8} 位` : '';
+
+    // 案件總金額
+    const total = jobs.reduce((s,j) => s + (+j.amount || 0), 0);
+
+    alert(
+      `備份內容預覽（${snap.timestamp}）\n` +
+      '─────────────────────────────\n' +
+      `業主：${clients.length} 位\n${clientList}${moreClients}\n\n` +
+      `案件：${jobs.length} 筆\n` +
+      `總金額：${fmt(total)}` +
+      negativeInfo +
+      '\n\n要還原這個版本？請按關閉預覽 → 點該筆的「⏮️ 還原」按鈕'
+    );
+    toast('');
   } catch (err) {
     alert('錯誤：' + err.message);
   }

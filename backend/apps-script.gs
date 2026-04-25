@@ -57,15 +57,20 @@ function handle_(e, method) {
     switch (action) {
       case 'ping':
         return json_({ ok: true, pong: true, time: new Date().toISOString() });
+      case 'getMeta':
+        return json_({ ok: true, meta: getMeta_() });
       case 'list':
-        return json_({ ok: true, data: readAll_(), listedAt: new Date().toISOString() });
+        return json_({ ok: true, data: readAll_(), meta: getMeta_(), listedAt: new Date().toISOString() });
       case 'save':
         // 寫入前自動 snapshot，避免資料遺失
         snapshotCurrent_(params.snapshotNote || 'before save');
         writeAll_(params.data || {});
-        return json_({ ok: true, savedAt: new Date().toISOString() });
+        updateMeta_(params.deviceLabel || 'unknown');
+        return json_({ ok: true, savedAt: new Date().toISOString(), meta: getMeta_() });
       case 'listSnapshots':
         return json_({ ok: true, snapshots: listSnapshots_() });
+      case 'getSnapshot':
+        return json_({ ok: true, snapshot: getSnapshot_(params.snapshotId) });
       case 'restoreSnapshot':
         return json_({ ok: true, result: restoreSnapshot_(params.snapshotId) });
       case 'testCalendar':
@@ -264,18 +269,95 @@ function snapshotCurrent_(note) {
 }
 
 /**
- * 列出所有 snapshot（只回傳 id + timestamp + note，不回傳 data 避免過大）
+ * 列出所有 snapshot（含詳細統計：業主數、案件數、總金額）
  */
 function listSnapshots_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('snapshots');
   if (!sheet || sheet.getLastRow() < 2) return [];
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
-  return values.reverse().map(([id, ts, note]) => ({
-    id: String(id),
-    timestamp: ts instanceof Date ? Utilities.formatDate(ts, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : String(ts),
-    note: String(note || '')
-  })).filter(s => s.id);
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+  return values.reverse().map(([id, ts, note, dataJson]) => {
+    let stats = { clients: 0, jobs: 0, totalAmount: 0 };
+    try {
+      const obj = JSON.parse(dataJson);
+      stats.clients = (obj.clients || []).length;
+      stats.jobs = (obj.jobs || []).length;
+      stats.totalAmount = (obj.jobs || []).reduce((s, j) => s + (+j.amount || 0), 0);
+    } catch (e) {}
+    return {
+      id: String(id),
+      timestamp: ts instanceof Date ? Utilities.formatDate(ts, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : String(ts),
+      note: String(note || ''),
+      stats
+    };
+  }).filter(s => s.id);
+}
+
+/**
+ * 取得特定 snapshot 的完整內容（用於前端預覽）
+ */
+function getSnapshot_(snapshotId) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('snapshots');
+  if (!sheet) throw new Error('沒有 snapshots 分頁');
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+  const row = values.find(r => String(r[0]) === String(snapshotId));
+  if (!row) throw new Error('找不到 snapshot: ' + snapshotId);
+  try {
+    return {
+      id: String(row[0]),
+      timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : String(row[1]),
+      note: String(row[2] || ''),
+      data: JSON.parse(row[3])
+    };
+  } catch (e) {
+    throw new Error('Snapshot 解析失敗：' + e.message);
+  }
+}
+
+// ============== Metadata（同步衝突保護）==============
+
+function getMeta_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('metadata');
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  const meta = {};
+  values.forEach(([k, v]) => {
+    if (k) meta[String(k)] = (v instanceof Date ? v.toISOString() : v);
+  });
+  return meta;
+}
+
+function updateMeta_(deviceLabel) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('metadata');
+    if (!sheet) {
+      sheet = ss.insertSheet('metadata');
+      sheet.getRange(1, 1, 1, 2).setValues([['key', 'value']]);
+      sheet.setFrozenRows(1);
+      sheet.setColumnWidth(1, 140);
+      sheet.setColumnWidth(2, 280);
+    }
+    const existing = getMeta_() || {};
+    const ts = new Date().toISOString();
+    const version = (+existing.version || 0) + 1;
+    const data = readAll_();
+    const newRows = [
+      ['version', version],
+      ['lastModifiedAt', ts],
+      ['lastDevice', deviceLabel || 'unknown'],
+      ['clientsCount', (data.clients || []).length],
+      ['jobsCount', (data.jobs || []).length]
+    ];
+    if (sheet.getLastRow() > 1) {
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).clearContent();
+    }
+    sheet.getRange(2, 1, newRows.length, 2).setValues(newRows);
+  } catch (err) {
+    Logger.log('updateMeta failed: ' + err.message);
+  }
 }
 
 /**

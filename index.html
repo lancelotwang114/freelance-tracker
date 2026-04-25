@@ -472,14 +472,20 @@
     <label>金額</label>
     <input type="number" id="job-amount" placeholder="0">
 
-    <label for="job-done" class="checkbox-row">
-      <input type="checkbox" id="job-done">
-      <span>✓ 案件完成</span>
-    </label>
-    <label for="job-paid" class="checkbox-row">
-      <input type="checkbox" id="job-paid">
-      <span>$ 已收款</span>
-    </label>
+    <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; margin-top: 12px;">
+      <label for="job-done" class="checkbox-row" style="margin: 0;">
+        <input type="checkbox" id="job-done" onchange="onJobDoneChange()">
+        <span>✓ 案件完成</span>
+      </label>
+      <input type="date" id="job-done-at" placeholder="完成日（自動填今日）" style="font-size: 13px;">
+
+      <label for="job-paid" class="checkbox-row" style="margin: 0;">
+        <input type="checkbox" id="job-paid" onchange="onJobPaidChange()">
+        <span>$ 已收款</span>
+      </label>
+      <input type="date" id="job-paid-at" placeholder="收款日（自動填今日）" style="font-size: 13px;">
+    </div>
+
     <label for="job-cancelled" class="checkbox-row danger-checkbox">
       <input type="checkbox" id="job-cancelled">
       <span>🚫 已取消（不計入收益統計但保留紀錄）</span>
@@ -553,6 +559,21 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 備份歷史 Modal -->
+<div class="modal-bg" id="snapshot-modal">
+  <div class="modal" style="max-width: 700px;">
+    <h2>🗂️ 雲端備份歷史</h2>
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">
+      每次推送到雲端前自動備份，保留最近 20 筆。可以查看內容、還原。
+    </p>
+    <div id="snapshot-list-modal"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('snapshot-modal').classList.remove('open')">關閉</button>
+      <button class="btn btn-outline" onclick="showSnapshotList()">🔄 重新整理</button>
+    </div>
+  </div>
+</div>
 
 <!-- 初次使用引導 -->
 <div class="modal-bg" id="onboarding-modal">
