@@ -9,25 +9,27 @@
 </head>
 <body>
 
-<header>
-  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
-    <div style="flex: 1; min-width: 0;">
-      <h1 id="page-title">外包收益與排程管理</h1>
-      <div class="sub" id="page-sub">個人自由工作者工具</div>
+<div class="top-bar">
+  <header>
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
+      <div style="flex: 1; min-width: 0;">
+        <h1 id="page-title">外包收益與排程管理</h1>
+        <div class="sub" id="page-sub">個人自由工作者工具</div>
+      </div>
+      <div id="sync-indicator" class="sync-indicator sync-idle" onclick="switchTab('settings')" title="點擊開啟設定頁">○ 未啟用</div>
     </div>
-    <div id="sync-indicator" class="sync-indicator sync-idle" onclick="switchTab('settings')" title="點擊開啟設定頁">○ 未啟用</div>
-  </div>
-</header>
+  </header>
 
-<nav class="tabs">
-  <button data-tab="dashboard" class="active">總覽<span class="badge hidden" id="dash-badge"></span></button>
-  <button data-tab="jobs">案件</button>
-  <button data-tab="calendar">行事曆</button>
-  <button data-tab="revenue">收益</button>
-  <button data-tab="clients">業主</button>
-  <button data-tab="invoice">請款單</button>
-  <button data-tab="settings">設定</button>
-</nav>
+  <nav class="tabs">
+    <button data-tab="dashboard" class="active">總覽<span class="badge hidden" id="dash-badge"></span></button>
+    <button data-tab="jobs">案件</button>
+    <button data-tab="calendar">行事曆</button>
+    <button data-tab="revenue">收益</button>
+    <button data-tab="clients">業主</button>
+    <button data-tab="invoice">請款單</button>
+    <button data-tab="settings">設定</button>
+  </nav>
+</div>
 
 <main>
   <!-- Dashboard -->
@@ -534,7 +536,30 @@
     <div id="prepayment-section" class="hidden" style="background: var(--bg); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
       <h4 style="font-size: 13px; margin-bottom: 8px;">儲值紀錄</h4>
       <div id="prepayment-list" style="margin-bottom: 8px;"></div>
-      <button class="btn btn-outline btn-sm" type="button" onclick="addPrepayment()">+ 新增儲值</button>
+
+      <!-- Inline 新增表單 (預設隱藏) -->
+      <div id="prepayment-add-form" class="hidden" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <div>
+            <label style="font-size: 11px; color: var(--muted);">儲值日期</label>
+            <input type="date" id="prepayment-add-date">
+          </div>
+          <div>
+            <label style="font-size: 11px; color: var(--muted);">金額</label>
+            <input type="number" id="prepayment-add-amount" min="0" step="100" placeholder="0">
+          </div>
+        </div>
+        <div style="margin-bottom: 8px;">
+          <label style="font-size: 11px; color: var(--muted);">備註（選填）</label>
+          <input type="text" id="prepayment-add-note" placeholder="例：LINEPAY、轉帳">
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="cancelAddPrepayment()">取消</button>
+          <button class="btn btn-primary btn-sm" type="button" onclick="confirmAddPrepayment()">確認新增</button>
+        </div>
+      </div>
+
+      <button id="prepayment-add-btn" class="btn btn-outline btn-sm" type="button" onclick="openAddPrepayment()">+ 新增儲值</button>
       <div id="prepayment-balance" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 13px;"></div>
     </div>
 

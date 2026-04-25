@@ -25,8 +25,8 @@ const API_TOKEN = 'CHANGE_ME_TO_A_LONG_RANDOM_STRING';
 // ================================
 
 const COLS = {
-  clients: ['id', 'name', 'color', 'note'],
-  jobs:    ['id', 'clientId', 'date', 'title', 'details', 'amount', 'done', 'paid', 'doneAt', 'paidAt'],
+  clients: ['id', 'name', 'color', 'note', 'commissionRate', 'commissionTo', 'prepaidMode', 'prepayments'],
+  jobs:    ['id', 'clientId', 'date', 'title', 'details', 'amount', 'done', 'paid', 'doneAt', 'paidAt', 'endDate', 'tag', 'cancelled'],
   config:  ['key', 'value']
 };
 
@@ -108,9 +108,14 @@ function readTable_(name) {
       const obj = {};
       cols.forEach((c, i) => {
         let v = row[i];
-        if (c === 'amount') v = Number(v) || 0;
-        if (c === 'done' || c === 'paid') v = (v === true || v === 'TRUE' || v === 'true' || v === 1);
-        if (c === 'date' || c === 'doneAt' || c === 'paidAt') v = normalizeDate_(v);
+        if (c === 'amount' || c === 'commissionRate') v = Number(v) || 0;
+        if (c === 'done' || c === 'paid' || c === 'cancelled' || c === 'prepaidMode') {
+          v = (v === true || v === 'TRUE' || v === 'true' || v === 1);
+        }
+        if (c === 'date' || c === 'doneAt' || c === 'paidAt' || c === 'endDate') v = normalizeDate_(v);
+        if (c === 'prepayments') {
+          try { v = v ? JSON.parse(v) : []; } catch (_) { v = []; }
+        }
         obj[c] = v;
       });
       return obj;
@@ -160,6 +165,10 @@ function writeTable_(name, rows) {
   const values = rows.map(r => cols.map(c => {
     const v = r[c];
     if (v === null || v === undefined) return '';
+    // 陣列／物件欄位（例如 prepayments）以 JSON 字串儲存，避免拍平丟失
+    if (Array.isArray(v) || (typeof v === 'object' && !(v instanceof Date))) {
+      return JSON.stringify(v);
+    }
     return v;
   }));
   sheet.getRange(2, 1, values.length, cols.length).setValues(values);
@@ -202,6 +211,13 @@ function getOrCreateSheet_(name) {
     // 空表：補上標題列
     sheet.getRange(1, 1, 1, COLS[name].length).setValues([COLS[name]]);
     sheet.setFrozenRows(1);
+  } else if (COLS[name]) {
+    // schema 升級：若現有欄位數少於 COLS，自動補上新 header
+    const lastCol = sheet.getLastColumn();
+    if (lastCol < COLS[name].length) {
+      sheet.getRange(1, 1, 1, COLS[name].length).setValues([COLS[name]]);
+      sheet.setFrozenRows(1);
+    }
   }
   return sheet;
 }

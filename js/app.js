@@ -2385,23 +2385,47 @@ function renderPrepaymentList() {
     `<span style="color: ${balance < 1000 ? 'var(--danger)' : 'var(--success)'};">餘額 <b>${fmt(balance)}</b></span>`;
 }
 
-function addPrepayment() {
-  const dateStr = prompt('儲值日期（YYYY-MM-DD）', todayStr());
-  if (!dateStr) return;
-  const amtStr = prompt('儲值金額', '');
-  if (!amtStr) return;
-  const amt = +amtStr;
-  if (isNaN(amt) || amt <= 0) { toast('金額無效'); return; }
-  const note = prompt('備註（選填，例：LINEPAY、轉帳）', '') || '';
-  modalPrepayments.push({ id: uid(), date: dateStr, amount: amt, note });
-  modalPrepayments.sort((a,b) => (a.date||'').localeCompare(b.date||''));
-  renderPrepaymentList();
+// Inline 新增儲值：開啟頁面內表單
+function openAddPrepayment() {
+  const form = document.getElementById('prepayment-add-form');
+  const btn = document.getElementById('prepayment-add-btn');
+  if (!form) return;
+  // 預設值
+  document.getElementById('prepayment-add-date').value = todayStr();
+  document.getElementById('prepayment-add-amount').value = '';
+  document.getElementById('prepayment-add-note').value = '';
+  form.classList.remove('hidden');
+  if (btn) btn.classList.add('hidden');
+  setTimeout(() => document.getElementById('prepayment-add-amount')?.focus(), 50);
 }
 
+function cancelAddPrepayment() {
+  document.getElementById('prepayment-add-form')?.classList.add('hidden');
+  document.getElementById('prepayment-add-btn')?.classList.remove('hidden');
+}
+
+function confirmAddPrepayment() {
+  const dateStr = document.getElementById('prepayment-add-date').value;
+  const amtStr = document.getElementById('prepayment-add-amount').value;
+  const note = document.getElementById('prepayment-add-note').value || '';
+  if (!dateStr) { toast('請選日期'); return; }
+  const amt = +amtStr;
+  if (isNaN(amt) || amt <= 0) { toast('金額無效'); return; }
+  modalPrepayments.push({ id: uid(), date: dateStr, amount: amt, note });
+  modalPrepayments.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  cancelAddPrepayment();
+  renderPrepaymentList();
+  toast('✓ 已新增儲值紀錄');
+}
+
+// 舊的 prompt 版本保留別名以防其他地方有引用
+function addPrepayment() { openAddPrepayment(); }
+
 function removePrepayment(i) {
-  if (!confirm('確定要刪除這筆儲值紀錄？')) return;
+  // 直接刪除（要復原可重新新增；不再用 confirm 彈窗）
   modalPrepayments.splice(i, 1);
   renderPrepaymentList();
+  toast('已刪除一筆儲值紀錄');
 }
 
 function refreshCommissionDropdown(selected) {

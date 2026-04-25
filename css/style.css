@@ -34,11 +34,17 @@ body {
 }
 
 /* ==================== Header & Tabs ==================== */
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--card);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
 header {
   background: var(--card);
   border-bottom: 1px solid var(--border);
   padding: 16px 20px;
-  position: sticky; top: 0; z-index: 10;
 }
 header h1 { font-size: 18px; font-weight: 600; }
 header .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -48,7 +54,6 @@ nav.tabs {
   border-bottom: 1px solid var(--border);
   display: flex;
   overflow-x: auto;
-  position: sticky; top: 57px; z-index: 9;
 }
 nav.tabs button {
   flex: 1;
@@ -1329,7 +1334,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ==================== Print ==================== */
 @media print {
-  header, nav.tabs, .fab, .no-print { display: none !important; }
+  .top-bar, header, nav.tabs, .fab, .no-print { display: none !important; }
   body { background: #fff; padding: 0; }
   main { padding: 0; }
   .invoice { box-shadow: none; padding: 20px; }
