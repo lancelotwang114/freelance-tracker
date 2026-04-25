@@ -169,6 +169,51 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 .row.state-paid .title { color: var(--muted); }
 .row.state-paid .amount { color: var(--success); }
 
+/* 批次操作 */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--primary-light);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.bulk-count {
+  font-weight: 700;
+  color: var(--primary);
+}
+.row.bulk-mode { padding-left: 0; cursor: default; }
+.row.bulk-mode .check-group { display: none; }
+.row.bulk-checkbox {
+  width: 22px; height: 22px;
+  border: 2px solid var(--border);
+  border-radius: 5px;
+  flex-shrink: 0;
+  cursor: pointer;
+  background: var(--card);
+  display: flex; align-items: center; justify-content: center;
+}
+.row.selected { background: var(--primary-light); }
+.row.selected > .row.bulk-checkbox,
+.row .bulk-checkbox.checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.bulk-checkbox.checked::after { content: "✓"; color: #fff; font-weight: 700; }
+
+/* 提醒高亮動畫 */
+@keyframes highlight-flash {
+  0%   { background: var(--warning-light); transform: translateX(0); }
+  20%  { background: var(--warning-light); transform: translateX(4px); }
+  100% { background: transparent; transform: translateX(0); }
+}
+.row.highlight {
+  animation: highlight-flash 2.5s ease-out;
+}
+
 /* 已取消 */
 .row.state-cancelled { opacity: 0.6; }
 .row.state-cancelled .title,

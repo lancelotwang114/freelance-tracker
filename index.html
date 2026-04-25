@@ -78,6 +78,17 @@
   <section id="tab-jobs" class="hidden">
     <div class="filter-bar" id="job-filter"></div>
     <div class="card">
+      <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+        <button class="btn btn-outline btn-sm" id="bulk-toggle" onclick="toggleBulkMode()">☑️ 批次操作</button>
+      </div>
+      <div id="bulk-bar" class="bulk-bar hidden">
+        <span class="bulk-count" id="bulk-count">已選 0 筆</span>
+        <button class="btn btn-outline btn-sm" onclick="bulkSelectAll()">全選</button>
+        <button class="btn btn-outline btn-sm" onclick="bulkInvert()">反選</button>
+        <button class="btn btn-primary btn-sm" onclick="bulkMarkDone()">✓ 標記完成</button>
+        <button class="btn btn-primary btn-sm" onclick="bulkMarkPaid()">$ 標記已收</button>
+        <button class="btn btn-danger btn-sm" onclick="bulkDelete()">🗑️ 刪除</button>
+      </div>
       <div id="jobs-list"></div>
     </div>
   </section>
@@ -99,6 +110,11 @@
     <div class="card">
       <h3 id="cal-list-title">本月排程列表</h3>
       <div id="cal-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>📌 未來 30 天排程</h3>
+      <div id="cal-upcoming"></div>
     </div>
   </section>
 
@@ -131,7 +147,8 @@
         <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--success)"></div>已收款</div>
         <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--warning)"></div>待收款</div>
         <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--muted); opacity:.5"></div>進行中</div>
-        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--primary)"></div>總額趨勢</div>
+        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: var(--primary)"></div>當期趨勢</div>
+        <div class="chart-legend-item"><div class="chart-legend-dot" style="background: #a855f7;"></div>累計收入</div>
       </div>
     </div>
 
@@ -144,6 +161,15 @@
   <!-- Clients -->
   <section id="tab-clients" class="hidden">
     <div class="card">
+      <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
+        <input type="search" id="client-search" placeholder="🔍 搜尋業主名稱..." style="flex: 1; min-width: 180px;" oninput="renderClients()">
+        <select id="client-sort" onchange="renderClients()" class="revenue-select" style="min-width: 130px;">
+          <option value="recent">依最近活動</option>
+          <option value="total">依累計金額</option>
+          <option value="unpaid">依待收款</option>
+          <option value="name">依名稱</option>
+        </select>
+      </div>
       <div id="clients-list"></div>
     </div>
   </section>
@@ -153,8 +179,18 @@
     <div class="card no-print">
       <label>選擇業主</label>
       <select id="inv-client"></select>
-      <label>選擇月份</label>
-      <select id="inv-month"></select>
+
+      <label>請款範圍</label>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+        <select id="inv-mode" onchange="onInvModeChange()" style="flex: 0 0 auto;">
+          <option value="single">單月</option>
+          <option value="range">月份區間</option>
+        </select>
+        <select id="inv-month" style="flex: 1; min-width: 120px;"></select>
+        <span id="inv-range-sep" class="hidden" style="color: var(--muted);">~</span>
+        <select id="inv-month-end" class="hidden" style="flex: 1; min-width: 120px;"></select>
+      </div>
+
       <div style="display:flex; gap: 8px; margin-top: 16px;">
         <button class="btn btn-primary" onclick="window.print()">列印 / 存 PDF</button>
         <button class="btn btn-outline" onclick="copyInvoiceText()">複製純文字</button>
@@ -359,8 +395,9 @@
     </div>
 
     <!-- 關於 -->
-    <div style="text-align: center; font-size: 11px; color: var(--muted); padding: 24px 0 0;">
-      外包收益管理工具 · v0.4
+    <div style="text-align: center; font-size: 12px; color: var(--muted); padding: 24px 0 0;">
+      <a onclick="showOnboardingAgain()" style="color: var(--primary); cursor: pointer; font-size: 12px;">↻ 再次顯示歡迎引導</a>
+      <div style="margin-top: 6px; font-size: 11px;">外包收益管理工具 · v0.5</div>
     </div>
   </section>
 
@@ -423,6 +460,44 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 初次使用引導 -->
+<div class="modal-bg" id="onboarding-modal">
+  <div class="modal" style="max-width: 480px;">
+    <h2>👋 歡迎使用外包收益管理工具</h2>
+    <p style="font-size: 14px; color: var(--muted); margin-bottom: 16px;">這是給接案工作者用的記帳 + 排程 + 請款工具。第一次打開，你想怎麼開始？</p>
+
+    <div class="checkbox-stack">
+      <div class="check-item" onclick="onboardingChoose('import-settings')" style="cursor: pointer; background: var(--primary-light); border: 1px solid var(--primary);">
+        <div style="font-size: 24px;">📥</div>
+        <div class="check-item-label">
+          <b>匯入設定檔</b>
+          <div class="check-item-desc">已經在別台裝置用過？匯入設定檔自動還原所有設定</div>
+        </div>
+      </div>
+
+      <div class="check-item" onclick="onboardingChoose('demo')" style="cursor: pointer;">
+        <div style="font-size: 24px;">🎨</div>
+        <div class="check-item-label">
+          <b>看範例感受一下</b>
+          <div class="check-item-desc">載入假資料，先逛逛、試試看每個功能</div>
+        </div>
+      </div>
+
+      <div class="check-item" onclick="onboardingChoose('blank')" style="cursor: pointer;">
+        <div style="font-size: 24px;">🚀</div>
+        <div class="check-item-label">
+          <b>從零開始</b>
+          <div class="check-item-desc">跳過引導，自己慢慢設定</div>
+        </div>
+      </div>
+    </div>
+
+    <p style="font-size: 12px; color: var(--muted); text-align: center; margin-top: 16px;">
+      之後想再看引導？到設定頁找「再次顯示歡迎引導」
+    </p>
+  </div>
+</div>
 
 <script src="js/app.js"></script>
 </body>
