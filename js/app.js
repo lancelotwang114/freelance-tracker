@@ -39,6 +39,8 @@ let config = {
   },
   sheetSyncEnabled: false,
   sheetPendingPush: false,  // 有待同步但離線時為 true
+  cloudFirstMode: false,    // 雲端優先：啟動必須 pull 成功，操作前必檢查
+  autoPollInterval: 60      // 自動 polling 雲端 metadata 間隔（秒，0 = 關閉）
 
   // Google Calendar 同步
   calEnabled: false,
@@ -3124,12 +3126,101 @@ async function restoreSnapshot(id) {
   }
 }
 
+// ============== 網頁版本偵測 ==============
+const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || 'unknown';
+const APP_VERSION_KEY = 'freelance-tracker-app-version';
+
+function checkAppVersionUpdate() {
+  // 啟動時：如果 localStorage 有舊版本記錄且不同 → 提示
+  const lastSeen = localStorage.getItem(APP_VERSION_KEY);
+  if (lastSeen && lastSeen !== APP_VERSION) {
+    setTimeout(() => {
+      toast(`✨ APP 已更新到 ${APP_VERSION}`, 4000);
+    }, 1000);
+  }
+  localStorage.setItem(APP_VERSION_KEY, APP_VERSION);
+}
+
+// 每 5 分鐘 fetch 一次自己的 HTML 比對版本
+async function pollAppVersion() {
+  try {
+    const resp = await fetch(location.href, { cache: 'no-store' });
+    const html = await resp.text();
+    const match = html.match(/<meta name="app-version" content="([^"]+)"/);
+    if (!match) return;
+    const remoteVersion = match[1];
+    if (remoteVersion !== APP_VERSION) {
+      const remind = document.getElementById('version-remind');
+      if (!remind) {
+        const div = document.createElement('div');
+        div.id = 'version-remind';
+        div.className = 'version-remind';
+        div.innerHTML = `🆕 APP 有新版本（${remoteVersion}），<a onclick="location.reload(true)" style="color:#fff;text-decoration:underline;cursor:pointer;">重新整理</a>`;
+        document.body.appendChild(div);
+      }
+    }
+  } catch (err) {
+    // 靜默失敗
+  }
+}
+
+// ============== 雲端優先模式 + 自動 polling ==============
+function saveCloudFirstMode() {
+  config.cloudFirstMode = document.getElementById('cloud-first').checked;
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  toast(config.cloudFirstMode ? '✓ 雲端優先模式已啟用' : '已關閉雲端優先模式');
+  if (config.cloudFirstMode && !config.sheetSyncEnabled) {
+    if (confirm('雲端優先需要搭配「自動同步」一起使用。\n\n要現在啟用自動同步嗎？')) {
+      enableSheetSync();
+    }
+  }
+}
+
+function saveAutoPoll() {
+  const v = +document.getElementById('auto-poll').value || 0;
+  config.autoPollInterval = Math.max(0, Math.min(600, v));
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  setupAutoPoll();
+  toast(config.autoPollInterval > 0 ? `✓ 每 ${config.autoPollInterval} 秒檢查一次` : '已關閉自動偵測');
+}
+
+let autoPollTimer = null;
+function setupAutoPoll() {
+  if (autoPollTimer) { clearInterval(autoPollTimer); autoPollTimer = null; }
+  if (!config.autoPollInterval || config.autoPollInterval <= 0) return;
+  if (!config.sheetConfig?.apiUrl || !config.sheetConfig?.apiToken) return;
+  autoPollTimer = setInterval(checkCloudForUpdate, config.autoPollInterval * 1000);
+}
+
+async function checkCloudForUpdate() {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken) return;
+  if (syncStatus === 'syncing') return;  // 別跟正在進行的同步衝突
+  try {
+    const resp = await fetch(cfg.apiUrl + '?action=getMeta&token=' + encodeURIComponent(cfg.apiToken));
+    const data = await resp.json();
+    if (!data.ok || !data.meta) return;
+    const cloudVer = +data.meta.version || 0;
+    const localCloudVer = +cfg.cloudVersion || 0;
+    if (cloudVer > localCloudVer) {
+      // 雲端有新版本
+      toast(`☁️ 雲端有新版本 (v${cloudVer})，自動下載中...`, 3500);
+      await pullFromSheet(true);
+      toast(`✓ 已同步雲端最新（v${cloudVer}）`, 3500);
+    }
+  } catch (err) {
+    // 靜默失敗
+  }
+}
+
 // ============== Apps Script 後端（Sheet URL + API URL）==============
 function loadSheetConfigUI() {
   const g = (id) => document.getElementById(id);
   if (!g('sheet-api')) return;
   g('sheet-api').value = config.sheetConfig?.apiUrl || '';
   g('sheet-url').value = config.sheetConfig?.sheetUrl || '';
+  if (g('cloud-first')) g('cloud-first').checked = !!config.cloudFirstMode;
+  if (g('auto-poll')) g('auto-poll').value = config.autoPollInterval ?? 60;
 }
 
 function saveSheetConfig() {
@@ -3385,14 +3476,23 @@ loadCalendarConfigUI();
 updateSheetSyncBadge();
 buildRangeOptions();
 setupAutoSave();
+checkAppVersionUpdate();
+setInterval(pollAppVersion, 5 * 60 * 1000);  // 每 5 分鐘檢查網頁新版
 render();
 
 // 啟動時若同步已啟用，自動從 Sheet 拉取最新資料
 if (config.sheetSyncEnabled && config.sheetConfig?.apiUrl && config.sheetConfig?.apiToken) {
-  setTimeout(() => pullFromSheet(true), 500);
+  setTimeout(async () => {
+    const ok = await pullFromSheet(true);
+    if (config.cloudFirstMode && !ok) {
+      // 雲端優先模式但 pull 失敗：唯讀
+      toast('⚠️ 雲端優先模式：無法連線雲端，目前為唯讀狀態', 5000);
+      setSyncStatus('offline', '雲端優先模式 - 唯讀中');
+    }
+    setupAutoPoll();
+  }, 500);
 } else {
   setSyncStatus('idle');
-  // 初次使用引導（只在沒設定 Sheet 同步時顯示）
   setTimeout(maybeShowOnboarding, 300);
 }
 

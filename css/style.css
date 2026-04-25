@@ -1295,6 +1295,20 @@ input:focus, select:focus, textarea:focus {
 /* ==================== Utilities ==================== */
 .hidden { display: none !important; }
 
+.version-remind {
+  position: fixed;
+  top: 12px; left: 50%;
+  transform: translateX(-50%);
+  background: var(--primary);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
 .toast {
   position: fixed;
   bottom: 90px; left: 50%;
