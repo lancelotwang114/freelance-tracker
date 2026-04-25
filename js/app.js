@@ -1146,11 +1146,17 @@ function buildRangeOptions() {
   if (!rangeSel) return;
   let html = '';
   if (revenueState.mode === 'year') {
-    // 年度：預設「最近 5 年」（含當年），拿掉「最近 3/5 年」快捷
-    html += '<option value="5" selected>最近 5 年（含當年）</option>';
-    html += '<option value="ytd">📅 今年至今（單一柱）</option>';
-    html += '<option value="all">全部</option>';
+    const thisY = new Date().getFullYear();
+    const startY = thisY - 4;
+    // 預設：顯示具體年份範圍而非「最近 5 年」
+    html += `<option value="5" selected>📅 ${startY} ~ ${thisY}</option>`;
+    html += '<option disabled>── 單一年度 ──</option>';
+    for (let y = thisY; y >= startY; y--) {
+      html += `<option value="year-${y}">${y}</option>`;
+    }
     html += '<option disabled>──────────</option>';
+    html += `<option value="ytd">📅 ${thisY} 至今</option>`;
+    html += '<option value="all">全部歷史</option>';
     html += '<option value="custom">📌 自訂年份範圍</option>';
     revenueState.range = '5';
   } else {
@@ -1252,6 +1258,13 @@ function renderRevenue() {
     // 今年至今：年度模式才有此選項
     const y = String(new Date().getFullYear());
     displayKeys = filled.filter(k => k === y);
+    if (!buckets[y]) buckets[y] = { paid: 0, unpaid: 0, pending: 0 };
+    if (!displayKeys.length) displayKeys = [y];
+  } else if (r.startsWith('year-')) {
+    // 單一年度（年度模式）
+    const y = r.slice(5);
+    displayKeys = [y];
+    if (!buckets[y]) buckets[y] = { paid: 0, unpaid: 0, pending: 0 };
   } else if (r === 'custom') {
     // 自訂範圍
     if (revenueState.mode === 'month') {
@@ -1295,6 +1308,7 @@ function renderRevenue() {
       if (d.label === thisY) d.label = `${thisY}（至今）`;
     });
   }
+  // 單一年度模式：直接顯示年份（不需修改 label）
 
   // 標題
   const modeLabel = revenueState.mode === 'year' ? '年度' : '月度';
@@ -1815,6 +1829,9 @@ function exportMonthlyReportCSV() {
   toast(`✓ 已匯出 ${month} 月度報表`);
 }
 
+// 暫存業主排行的案件 ID 清單，給點擊時跳轉用
+let clientRankCache = {};
+
 function renderClientRank(jobs, keysFilter) {
   const box = document.getElementById('rev-client-rank');
   if (!box) return;
@@ -1832,11 +1849,12 @@ function renderClientRank(jobs, keysFilter) {
   const byClient = {};
   scoped.forEach(j => {
     const cid = j.clientId || 'unknown';
-    if (!byClient[cid]) byClient[cid] = { paid: 0, unpaid: 0, pending: 0, count: 0 };
+    if (!byClient[cid]) byClient[cid] = { paid: 0, unpaid: 0, pending: 0, count: 0, jobIds: [] };
     if (j.paid) byClient[cid].paid += (+j.amount||0);
     else if (j.done) byClient[cid].unpaid += (+j.amount||0);
     else byClient[cid].pending += (+j.amount||0);
     byClient[cid].count++;
+    byClient[cid].jobIds.push(j.id);
   });
 
   const rows = Object.entries(byClient)
@@ -1846,6 +1864,10 @@ function renderClientRank(jobs, keysFilter) {
     })
     .filter(r => r.total > 0)
     .sort((a,b) => b.total - a.total);
+
+  // 暫存到 cache 讓點擊用
+  clientRankCache = {};
+  rows.forEach(r => { clientRankCache[r.cid] = { jobIds: r.jobIds, name: r.name, count: r.count }; });
 
   if (!rows.length) {
     box.innerHTML = emptyState('期間內沒有收益資料', '');
@@ -1857,7 +1879,7 @@ function renderClientRank(jobs, keysFilter) {
     const paidPct = r.total ? r.paid / r.total * 100 : 0;
     const unpaidPct = r.total ? r.unpaid / r.total * 100 : 0;
     const barScale = r.total / maxTotal * 100;
-    return `<div class="client-rank-row">
+    return `<div class="client-rank-row" onclick="clickClientRank('${r.cid}')" style="cursor: pointer;" title="點擊查看 ${r.count} 筆案件">
       <div class="dot" style="background:${r.color}; width: 10px; height: 10px;"></div>
       <div class="client-rank-info">
         <div class="client-rank-name">${escapeHtml(r.name)}<span style="color: var(--muted); font-size: 11px; font-weight: 400;">（${r.count} 筆）</span></div>
@@ -1872,6 +1894,26 @@ function renderClientRank(jobs, keysFilter) {
       </div>
     </div>`;
   }).join('');
+}
+
+// 點業主排行 → 鎖定篩選那批案件 + 跳案件分頁
+function clickClientRank(cid) {
+  const cache = clientRankCache[cid];
+  if (!cache) return;
+  // 範圍標籤（描述當前 revenue 顯示的範圍）
+  let rangeLabel = '當前範圍';
+  const r = String(revenueState.range);
+  if (r === 'all') rangeLabel = '全部';
+  else if (r === 'ytd') rangeLabel = '今年至今';
+  else if (r === 'custom') {
+    rangeLabel = revenueState.mode === 'month' ? '自訂月份範圍' : '自訂年份範圍';
+  } else if (revenueState.mode === 'year') {
+    rangeLabel = `最近 ${r} 年`;
+  } else {
+    rangeLabel = `最近 ${r} 個月`;
+  }
+  lockJobsToIds(cache.jobIds, `${cache.name} · ${rangeLabel}（${cache.count} 筆）`);
+  switchTab('jobs');
 }
 
 // ============== Invoice Tab ==============

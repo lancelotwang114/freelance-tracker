@@ -1132,10 +1132,13 @@ input:focus, select:focus, textarea:focus {
 /* 業主貢獻排行 */
 .client-rank-row {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 0;
+  padding: 10px 8px;
   border-bottom: 1px solid var(--border);
+  border-radius: 6px;
+  transition: background .15s;
 }
 .client-rank-row:last-child { border-bottom: none; }
+.client-rank-row:hover { background: var(--bg); }
 .client-rank-info { flex: 1; min-width: 0; }
 .client-rank-name {
   display: flex; align-items: center; gap: 6px;
