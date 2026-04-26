@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.3';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.4';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -310,8 +310,9 @@ function switchTab(tab) {
   if (tab === 'settings' || tab === 'invoice' || tab === 'revenue') {
     fab.style.display = 'none';
   } else {
-    fab.style.display = 'block';
+    fab.style.display = 'inline-flex';
     fab.onclick = (tab === 'clients') ? openClientModal : openJobModal;
+    fab.textContent = (tab === 'clients') ? '＋ 新增業主' : '＋ 新增案件';
   }
   // 切到該分頁時才重畫該分頁
   renderActiveTab();
@@ -3352,9 +3353,10 @@ function confirmPaidDate() {
 // ----- Job Modal -----
 let editingJobId = null;
 
-async function openJobModal() {
+function openJobModal() {
   if (!state.clients.length) { toast('請先新增業主'); switchTab('clients'); openClientModal(); return; }
-  await tryAcquireLockOrWarn('案件');
+  // v2.7.4: 鎖在背景拿，不擋 modal 開啟（修 FAB 點擊慢）
+  tryAcquireLockOrWarn('案件');
   editingJobId = null;
   document.getElementById('job-modal-title').textContent = '新增案件';
   document.getElementById('job-delete-btn').classList.add('hidden');
@@ -3584,8 +3586,9 @@ function deleteJob() {
 let editingClientId = null;
 let pickedColor = COLORS[0];
 
-async function openClientModal() {
-  await tryAcquireLockOrWarn('業主');
+function openClientModal() {
+  // v2.7.4: 鎖在背景拿，不擋 modal 開啟
+  tryAcquireLockOrWarn('業主');
   editingClientId = null;
   document.getElementById('client-modal-title').textContent = '新增業主';
   document.getElementById('client-delete-btn').classList.add('hidden');
@@ -4628,7 +4631,24 @@ function setTheme(mode) {
   localStorage.setItem(THEME_KEY, mode);
   applyTheme();
   loadThemeUI();
+  updateThemeToggleIcon();
   toast(`✓ 主題：${ {auto: '自動（跟隨系統）', light: '淺色', dark: '深色'}[mode] }`);
+}
+
+// v2.7.4: 標題列圖示按一下循環切換 auto → light → dark
+function cycleTheme() {
+  const cur = localStorage.getItem(THEME_KEY) || 'auto';
+  const next = cur === 'auto' ? 'light' : cur === 'light' ? 'dark' : 'auto';
+  setTheme(next);
+}
+
+function updateThemeToggleIcon() {
+  const btn = document.getElementById('theme-toggle-btn');
+  if (!btn) return;
+  const cur = localStorage.getItem(THEME_KEY) || 'auto';
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  btn.textContent = cur === 'auto' ? '🪄' : (isDark ? '🌙' : '☀️');
+  btn.title = `主題：${cur === 'auto' ? '自動（點擊切淺色）' : cur === 'light' ? '淺色（點擊切深色）' : '深色（點擊切自動）'}`;
 }
 
 function loadThemeUI() {
@@ -4640,10 +4660,13 @@ function loadThemeUI() {
 
 // 啟動時立刻套用（避免閃白）
 applyTheme();
-// 系統色模式變更時即時切換（auto 模式才有效）
+// 系統色模式變更時即時切換（auto 模式才有效）+ 同步圖示
 if (window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if ((localStorage.getItem(THEME_KEY) || 'auto') === 'auto') applyTheme();
+    if ((localStorage.getItem(THEME_KEY) || 'auto') === 'auto') {
+      applyTheme();
+      updateThemeToggleIcon();
+    }
   });
 }
 
@@ -5606,6 +5629,7 @@ function maybeGenerateMonthlySnapshot() {
 
 // v2.2: 啟動時套用主題 + Lab Mode UI
 loadThemeUI();
+updateThemeToggleIcon();
 updateLabModeUI();
 updateNotifUI();
 // v2.5: 開頁掃一次推通知（一天一次）
