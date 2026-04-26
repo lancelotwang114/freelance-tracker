@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.3">
+<meta name="app-version" content="2026-04-27-v2.4">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -12,11 +12,23 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/icon.svg">
 <link rel="stylesheet" href="css/style.css">
+<!-- 請款單匯出（PDF / PNG）— 點按鈕時才動態載入，啟動不變慢 -->
 <script>
   // 註冊 Service Worker（PWA — 可加入主畫面、離線可開）
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('service-worker.js').catch(() => {});
+    });
+  }
+  // 動態載入外部 lib（避免啟動成本）
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Failed to load: ' + src));
+      document.head.appendChild(s);
     });
   }
 </script>
@@ -249,9 +261,11 @@
         <select id="inv-month-end" class="hidden" style="flex: 1; min-width: 120px;"></select>
       </div>
 
-      <div style="display:flex; gap: 8px; margin-top: 16px;">
-        <button class="btn btn-primary" onclick="window.print()">列印 / 存 PDF</button>
-        <button class="btn btn-outline" onclick="copyInvoiceText()">複製純文字</button>
+      <div style="display:flex; gap: 8px; margin-top: 16px; flex-wrap: wrap;">
+        <button class="btn btn-primary" onclick="exportInvoicePDF()">📄 下載 PDF</button>
+        <button class="btn btn-primary" onclick="exportInvoicePNG()">🖼️ 下載圖片</button>
+        <button class="btn btn-outline" onclick="window.print()">🖨️ 列印</button>
+        <button class="btn btn-outline" onclick="copyInvoiceText()">📋 複製純文字</button>
       </div>
     </div>
     <div id="invoice-view"></div>
@@ -432,6 +446,8 @@
           <button class="btn btn-outline btn-sm" onclick="pullFromSheet(false)">⬇️ 從雲端下載</button>
           <button class="btn btn-outline btn-sm" onclick="pushToSheet(false)">⬆️ 上傳到雲端</button>
           <button class="btn btn-outline btn-sm" onclick="showSnapshotList()">🗂️ 備份歷史</button>
+          <button class="btn btn-outline btn-sm" onclick="showHealthCheckModal()">🩺 資料健檢</button>
+          <button class="btn btn-outline btn-sm" onclick="showCloudCapacity()">📊 容量監控</button>
         </div>
 
         <div class="section-divider"></div>
@@ -581,8 +597,15 @@
     <input type="text" id="job-tag" placeholder="自由輸入" list="tag-suggestions">
     <datalist id="tag-suggestions"></datalist>
 
-    <label>細項說明（業主看得到）</label>
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <label style="margin: 0;">細項說明（業主看得到）</label>
+      <div style="display: flex; gap: 4px;">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="openTemplatePicker()" style="font-size: 12px;">📋 範本</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="saveCurrentAsTemplate()" style="font-size: 12px;">💾 存範本</button>
+      </div>
+    </div>
     <textarea id="job-details" placeholder="例：1280x400 banner x 2 張，含兩次修改"></textarea>
+    <div id="template-picker" class="hidden" style="background: var(--bg); border-radius: 8px; padding: 8px; margin-top: -4px; margin-bottom: 8px; max-height: 200px; overflow-y: auto;"></div>
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
       <div>
         <label>金額</label>
@@ -737,6 +760,21 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="skipDeviceNamePrompt()">先跳過</button>
       <button class="btn btn-primary" onclick="saveDeviceNameFromPrompt()">儲存名稱</button>
+    </div>
+  </div>
+</div>
+
+<!-- 資料健檢 Modal -->
+<div class="modal-bg" id="health-modal">
+  <div class="modal" style="max-width: 600px;">
+    <h2>🩺 資料健檢</h2>
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">
+      掃描所有資料找出潛在問題（孤兒、重複、異常金額、缺欄位等）。點按鈕可直接查看那些案件。
+    </p>
+    <div id="health-check-result"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('health-modal').classList.remove('open')">關閉</button>
+      <button class="btn btn-outline" onclick="showHealthCheckModal()">🔄 重新掃描</button>
     </div>
   </div>
 </div>

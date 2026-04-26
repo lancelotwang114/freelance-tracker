@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.3';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.4';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -2044,6 +2044,326 @@ function clickClientRank(cid) {
   }
   lockJobsToIds(cache.jobIds, `${cache.name} · ${rangeLabel}（${cache.count} 筆）`);
   switchTab('jobs');
+}
+
+// ============== 雲端容量監控 ==============
+async function showCloudCapacity() {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken) { toast('請先設定雲端同步'); return; }
+  toastProgress('📊 計算容量中...');
+  try {
+    const url = cfg.apiUrl + '?action=listSnapshots&token=' + encodeURIComponent(cfg.apiToken);
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!data.ok) { toast('讀取失敗'); return; }
+    const snaps = data.snapshots || [];
+    const totalBytes = snaps.reduce((s, x) => s + (x.dataSize || 0), 0);
+    const totalKB = Math.round(totalBytes / 1024);
+    const totalMB = (totalBytes / 1024 / 1024).toFixed(2);
+    // 估算當前資料 size
+    const currentJson = JSON.stringify({ clients: state.clients, jobs: state.jobs });
+    const currentKB = Math.round(currentJson.length / 1024);
+
+    // 分層統計
+    const byTier = {};
+    snaps.forEach(s => { byTier[s.tier] = (byTier[s.tier] || 0) + 1; });
+    const tierLabels = { force: '🔒 每日強制', manual: '✋ 手動', restore: '↩️ 還原前', auto: '⚙️ 自動', legacy: '📦 舊版' };
+    const tierLines = Object.entries(byTier).map(([k, v]) => `  ${tierLabels[k] || k}: ${v} 份`).join('\n');
+
+    // Sheet 限制：單儲存格 50K 字元，整 sheet 1000 萬儲存格（基本不會撞到）
+    const maxSnapshotSize = 4 * 45000;  // 4 columns * 45K
+    const usagePct = Math.round(currentJson.length / maxSnapshotSize * 100);
+
+    const msg = [
+      `📊 雲端 Sheet 容量現況`,
+      ``,
+      `本地資料大小：約 ${currentKB} KB`,
+      `每筆 snapshot 上限：180 KB（4 欄拆分）`,
+      `當前資料佔上限 ${usagePct}% ${usagePct > 80 ? '⚠️ 接近上限' : '✓'}`,
+      ``,
+      `Snapshot 總數：${snaps.length} 份`,
+      `Snapshot 總大小：${totalKB} KB（${totalMB} MB）`,
+      ``,
+      `分層分佈：`,
+      tierLines,
+      ``,
+      `Google Sheet 整體上限：1000 萬儲存格（基本不會用到 1%）`
+    ].join('\n');
+    alert(msg);
+  } catch (err) {
+    toast('錯誤：' + err.message);
+  }
+}
+
+// ============== 資料健檢 ==============
+function runDataHealthCheck() {
+  const results = [];
+  const clientIds = new Set(state.clients.map(c => c.id));
+  const clientNameLower = {};
+
+  // 1. 孤兒案件（clientId 不存在）
+  const orphans = state.jobs.filter(j => !clientIds.has(j.clientId));
+  if (orphans.length) {
+    results.push({
+      severity: 'error',
+      title: `${orphans.length} 筆孤兒案件`,
+      desc: 'clientId 對應不到任何業主（可能是業主被刪除）',
+      jobIds: orphans.map(j => j.id),
+      action: { label: '查看這些案件', fn: () => { lockJobsToIds(orphans.map(j=>j.id), `🔧 孤兒案件（${orphans.length} 筆）`); switchTab('jobs'); } }
+    });
+  }
+
+  // 2. 重複業主名（同名）
+  const nameCount = {};
+  state.clients.forEach(c => {
+    const k = (c.name || '').trim().toLowerCase();
+    if (!k) return;
+    nameCount[k] = (nameCount[k] || 0) + 1;
+    clientNameLower[k] = clientNameLower[k] || [];
+    clientNameLower[k].push(c);
+  });
+  const dupes = Object.keys(nameCount).filter(k => nameCount[k] > 1);
+  if (dupes.length) {
+    const samples = dupes.slice(0, 3).map(k => clientNameLower[k][0].name).join('、');
+    results.push({
+      severity: 'warn',
+      title: `${dupes.length} 個業主名重複`,
+      desc: `例：${samples}${dupes.length > 3 ? '…' : ''}`
+    });
+  }
+
+  // 3. 異常金額（>= 10 倍中位數，或 = 0）
+  const amounts = state.jobs.filter(j => !j.cancelled).map(j => +j.amount || 0).filter(n => n > 0).sort((a,b) => a-b);
+  if (amounts.length > 5) {
+    const median = amounts[Math.floor(amounts.length / 2)];
+    const outliers = state.jobs.filter(j => !j.cancelled && (+j.amount || 0) >= median * 10);
+    if (outliers.length) {
+      results.push({
+        severity: 'info',
+        title: `${outliers.length} 筆金額異常高`,
+        desc: `中位數 ${fmt(median)}，這幾筆 >= 中位數 10 倍`,
+        jobIds: outliers.map(j => j.id),
+        action: { label: '查看', fn: () => { lockJobsToIds(outliers.map(j=>j.id), `🔧 金額異常（${outliers.length} 筆）`); switchTab('jobs'); } }
+      });
+    }
+  }
+
+  // 4. 缺日期 / 缺金額 / 缺標題
+  const missingDate = state.jobs.filter(j => !j.cancelled && !j.date);
+  const missingAmount = state.jobs.filter(j => !j.cancelled && !(+j.amount));
+  const missingTitle = state.jobs.filter(j => !(j.title || '').trim());
+  if (missingDate.length) {
+    results.push({ severity: 'warn', title: `${missingDate.length} 筆案件沒有日期`, desc: '可能影響月份統計', jobIds: missingDate.map(j=>j.id),
+      action: { label: '查看', fn: () => { lockJobsToIds(missingDate.map(j=>j.id), `🔧 缺日期（${missingDate.length} 筆）`); switchTab('jobs'); } } });
+  }
+  if (missingAmount.length) {
+    results.push({ severity: 'warn', title: `${missingAmount.length} 筆案件沒有金額`, desc: '會被視為 0', jobIds: missingAmount.map(j=>j.id),
+      action: { label: '查看', fn: () => { lockJobsToIds(missingAmount.map(j=>j.id), `🔧 缺金額（${missingAmount.length} 筆）`); switchTab('jobs'); } } });
+  }
+  if (missingTitle.length) {
+    results.push({ severity: 'info', title: `${missingTitle.length} 筆案件沒有標題`, desc: '建議補上方便辨識', jobIds: missingTitle.map(j=>j.id),
+      action: { label: '查看', fn: () => { lockJobsToIds(missingTitle.map(j=>j.id), `🔧 缺標題（${missingTitle.length} 筆）`); switchTab('jobs'); } } });
+  }
+
+  // 5. doneAt > paidAt（時序錯亂）
+  const reversed = state.jobs.filter(j => j.doneAt && j.paidAt && j.paidAt < j.doneAt);
+  if (reversed.length) {
+    results.push({ severity: 'warn', title: `${reversed.length} 筆收款日期早於完成日期`, desc: '時序可能填錯', jobIds: reversed.map(j=>j.id),
+      action: { label: '查看', fn: () => { lockJobsToIds(reversed.map(j=>j.id), `🔧 時序錯亂（${reversed.length} 筆）`); switchTab('jobs'); } } });
+  }
+
+  // 6. 過大資料（單筆 details > 5000 字）
+  const tooLarge = state.jobs.filter(j => (j.details || '').length > 5000);
+  if (tooLarge.length) {
+    results.push({ severity: 'info', title: `${tooLarge.length} 筆案件 details 過長 (>5000 字)`, desc: '建議精簡' });
+  }
+
+  return results;
+}
+
+let _healthCheckResults = [];
+
+function showHealthCheckModal() {
+  _healthCheckResults = runDataHealthCheck();
+  const box = document.getElementById('health-check-result');
+  if (!box) return;
+  if (!_healthCheckResults.length) {
+    box.innerHTML = '<div style="text-align: center; padding: 30px; color: var(--success); font-size: 16px;">✅ 所有資料看起來都很正常！</div>';
+  } else {
+    const colorMap = { error: 'var(--danger)', warn: 'var(--warning)', info: 'var(--muted)' };
+    const iconMap = { error: '🔴', warn: '🟡', info: 'ℹ️' };
+    box.innerHTML = _healthCheckResults.map((r, i) => `
+      <div style="padding: 10px; border-radius: 8px; background: var(--bg); margin-bottom: 8px; border-left: 3px solid ${colorMap[r.severity]};">
+        <div style="font-weight: 600; font-size: 14px;">${iconMap[r.severity]} ${escapeHtml(r.title)}</div>
+        <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">${escapeHtml(r.desc)}</div>
+        ${r.action ? `<button class="btn btn-outline btn-sm" style="margin-top: 6px;" onclick="runHealthAction(${i})">${escapeHtml(r.action.label)}</button>` : ''}
+      </div>
+    `).join('');
+  }
+  document.getElementById('health-modal').classList.add('open');
+}
+
+function runHealthAction(i) {
+  const r = _healthCheckResults[i];
+  if (r?.action?.fn) {
+    r.action.fn();
+    document.getElementById('health-modal').classList.remove('open');
+  }
+}
+
+// ============== 範本系統（案件描述常用片語）==============
+const TEMPLATES_KEY = 'ftJobTemplates_v1';
+
+function getTemplates() {
+  try { return JSON.parse(localStorage.getItem(TEMPLATES_KEY) || '[]'); }
+  catch (_) { return []; }
+}
+function setTemplates(arr) {
+  localStorage.setItem(TEMPLATES_KEY, JSON.stringify(arr));
+}
+
+function openTemplatePicker() {
+  const box = document.getElementById('template-picker');
+  if (!box) return;
+  if (!box.classList.contains('hidden')) {
+    box.classList.add('hidden');
+    return;
+  }
+  const list = getTemplates();
+  if (!list.length) {
+    box.innerHTML = '<div style="font-size: 12px; color: var(--muted); padding: 8px; text-align: center;">尚無範本，先在文字框打字後按「💾 存範本」儲存</div>';
+  } else {
+    box.innerHTML = list.map((t, i) => `
+      <div style="display: flex; gap: 6px; align-items: flex-start; padding: 6px; border-bottom: 1px solid var(--border);">
+        <div style="flex: 1; font-size: 13px; cursor: pointer; white-space: pre-wrap;" onclick="useTemplate(${i})">${escapeHtml(t.length > 80 ? t.slice(0, 80) + '…' : t)}</div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="deleteTemplate(${i})" style="color: var(--danger); padding: 2px 6px;">✕</button>
+      </div>
+    `).join('');
+  }
+  box.classList.remove('hidden');
+}
+
+function useTemplate(i) {
+  const list = getTemplates();
+  const t = list[i];
+  if (!t) return;
+  const ta = document.getElementById('job-details');
+  if (!ta) return;
+  // 如果已有內容 → 在後面接上；空的就直接帶入
+  ta.value = ta.value.trim() ? (ta.value + '\n' + t) : t;
+  document.getElementById('template-picker')?.classList.add('hidden');
+  toast('✓ 已帶入範本');
+}
+
+function deleteTemplate(i) {
+  const list = getTemplates();
+  list.splice(i, 1);
+  setTemplates(list);
+  openTemplatePicker();  // 重畫
+  // 再開一次（toggle 邏輯有點繞，直接強制顯示）
+  document.getElementById('template-picker')?.classList.remove('hidden');
+  toast('已刪除範本');
+}
+
+function saveCurrentAsTemplate() {
+  const ta = document.getElementById('job-details');
+  const text = ta?.value?.trim() || '';
+  if (!text) { toast('文字框是空的'); return; }
+  if (text.length < 5) { toast('範本內容太短（至少 5 字）'); return; }
+  const list = getTemplates();
+  if (list.includes(text)) { toast('已有相同範本'); return; }
+  list.unshift(text);  // 新範本放最前
+  if (list.length > 30) list.length = 30;  // 最多 30 個
+  setTemplates(list);
+  toast(`✓ 已存範本（共 ${list.length} 個）`, 3000);
+}
+
+// ============== Invoice 匯出（PDF / 圖片）==============
+const HTML2CANVAS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+const JSPDF_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+
+function getInvoiceFilename(ext) {
+  const sel = document.getElementById('inv-client');
+  const c = state.clients.find(x => x.id === sel?.value);
+  const cname = c ? c.name : 'invoice';
+  const m = document.getElementById('inv-month')?.value || '';
+  const mEnd = document.getElementById('inv-month-end')?.value || '';
+  const range = (mEnd && mEnd !== m) ? `${m}_${mEnd}` : m;
+  return `請款單_${cname}_${range}.${ext}`.replace(/\s+/g, '');
+}
+
+async function captureInvoiceCanvas() {
+  const view = document.getElementById('invoice-view');
+  if (!view || !view.innerHTML.trim()) {
+    toast('請先選擇業主與月份');
+    return null;
+  }
+  toastProgress('🎨 渲染中...');
+  await loadScript(HTML2CANVAS_CDN);
+  // 用較高 scale 提升解析度（不會太糊）
+  const canvas = await html2canvas(view, {
+    scale: 2,
+    backgroundColor: getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff',
+    useCORS: true,
+    logging: false
+  });
+  return canvas;
+}
+
+async function exportInvoicePNG() {
+  try {
+    const canvas = await captureInvoiceCanvas();
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = getInvoiceFilename('png');
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    toast('✓ 已下載圖片');
+  } catch (err) {
+    toast('匯出失敗：' + err.message);
+  }
+}
+
+async function exportInvoicePDF() {
+  try {
+    const canvas = await captureInvoiceCanvas();
+    if (!canvas) return;
+    toastProgress('📄 產生 PDF...');
+    await loadScript(JSPDF_CDN);
+    const { jsPDF } = window.jspdf;
+
+    // A4 尺寸：210mm × 297mm；用 mm 為單位
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageW = pdf.internal.pageSize.getWidth();   // 210
+    const pageH = pdf.internal.pageSize.getHeight();  // 297
+    const margin = 8;
+    const usableW = pageW - margin * 2;
+
+    const imgW = usableW;
+    const imgH = (canvas.height * imgW) / canvas.width;
+    const imgData = canvas.toDataURL('image/png');
+
+    // 內容比一頁長 → 分頁
+    if (imgH <= pageH - margin * 2) {
+      pdf.addImage(imgData, 'PNG', margin, margin, imgW, imgH);
+    } else {
+      // 把整張圖切成多頁
+      let position = margin;
+      let heightLeft = imgH;
+      pdf.addImage(imgData, 'PNG', margin, position, imgW, imgH);
+      heightLeft -= (pageH - margin * 2);
+      while (heightLeft > 0) {
+        position = heightLeft - imgH + margin;  // 負位移把上半部推到頁面外
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', margin, position, imgW, imgH);
+        heightLeft -= (pageH - margin * 2);
+      }
+    }
+    pdf.save(getInvoiceFilename('pdf'));
+    toast('✓ 已下載 PDF');
+  } catch (err) {
+    toast('匯出失敗：' + err.message);
+  }
 }
 
 // ============== Invoice Tab ==============
