@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.2';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.3';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -284,7 +284,11 @@ document.querySelectorAll('nav.tabs button').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
+// v2.3 效能優化：記住目前分頁，只渲染當前可見的內容
+let currentTab = 'dashboard';
+
 function switchTab(tab) {
+  currentTab = tab;
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   ['dashboard','jobs','calendar','revenue','clients','invoice','settings'].forEach(t => {
     document.getElementById('tab-'+t).classList.toggle('hidden', t !== tab);
@@ -296,11 +300,43 @@ function switchTab(tab) {
     fab.style.display = 'block';
     fab.onclick = (tab === 'clients') ? openClientModal : openJobModal;
   }
-  render();
+  // 切到該分頁時才重畫該分頁
+  renderActiveTab();
 }
 
 // ============== Render (main) ==============
+// v2.3：只重畫「當前可見分頁」+ 永遠需要的小元素（徽章、提醒）
+// 大幅減少 462 案件 + 13 業主下的 reflow / repaint 成本
+
+let renderRafId = null;
+
 function render() {
+  // 用 requestAnimationFrame 合併連續多次 render 呼叫成一次
+  if (renderRafId) return;
+  renderRafId = requestAnimationFrame(() => {
+    renderRafId = null;
+    renderActiveTab();
+    // 永遠都要更新（徽章、提醒、備份狀態都很輕）
+    renderAlerts();
+    renderBadge();
+    renderBackupStatus();
+  });
+}
+
+function renderActiveTab() {
+  switch (currentTab) {
+    case 'dashboard': renderDashboard(); break;
+    case 'jobs':      renderJobs();      break;
+    case 'calendar':  renderCalendar();  break;
+    case 'revenue':   renderRevenue();   break;
+    case 'clients':   renderClients();   break;
+    case 'invoice':   renderInvoice();   break;
+    // settings 不需要 render（純靜態）
+  }
+}
+
+// 強制全部重畫（特殊場景：例如 import / restore / 切換主題）
+function renderAll() {
   renderAlerts();
   renderDashboard();
   renderJobs();
@@ -2161,14 +2197,29 @@ function setFilter(key, value) {
   render();
 }
 
+// v2.3：只更新單一案件 row（避免 462 筆全重畫）
+function updateJobRow(id) {
+  const j = state.jobs.find(x => x.id === id);
+  if (!j) return;
+  const oldRow = document.querySelector(`[data-job-id="${id}"]`);
+  if (!oldRow) { renderJobs(); return; }  // 找不到 → 退回完整重畫
+  // 用同樣 HTML 取代
+  const tmp = document.createElement('div');
+  tmp.innerHTML = jobRow(j);
+  const newRow = tmp.firstElementChild;
+  if (newRow) oldRow.replaceWith(newRow);
+}
+
 function toggleDone(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
   if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
   j.done = !j.done;
   j.doneAt = j.done ? todayStr() : null;
-  // 取消完成 → 自動取消收款
   if (!j.done) { j.paid = false; j.paidAt = null; }
-  save(); render();
+  save();
+  // 局部更新單一 row + 輕量元素，跳過昂貴的圖表重畫
+  updateJobRow(id);
+  renderAlerts(); renderBadge();
   toast(j.done?'✓ 已標記完成':'已改為進行中');
 }
 
@@ -2176,13 +2227,13 @@ function togglePaid(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
   if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
   if (j.paid) {
-    // 取消收款：直接清除
     j.paid = false;
     j.paidAt = null;
-    save(); render();
+    save();
+    updateJobRow(id);
+    renderAlerts(); renderBadge();
     toast('已改為待收款');
   } else {
-    // 勾收款：跳日期 modal
     openPaidDateModal([id]);
   }
 }
@@ -2880,7 +2931,7 @@ function importData(e) {
         doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
         paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
       }));
-      save(); render(); toast('✓ 已匯入');
+      save(); renderAll(); toast('✓ 已匯入');
     } catch(err) {
       alert('檔案格式錯誤：' + err.message);
     }
@@ -2923,7 +2974,7 @@ function loadDemo() {
     // 未來案件
     { id: uid(), clientId: c3, date: addDays(new Date(), 10), title: 'Logo 優化', details: '主視覺調整', amount: 5000, done: false, paid: false, doneAt: null, paidAt: null },
   ];
-  save(); render(); toast('✓ 已載入範例');
+  save(); renderAll(); toast('✓ 已載入範例');
 }
 
 function clearAll() {
@@ -2940,7 +2991,7 @@ function clearAll() {
     return;
   }
   state.clients = []; state.jobs = [];
-  save(); render(); toast('已清空全部資料');
+  save(); renderAll(); toast('已清空全部資料');
 }
 
 // ============== 事件監聽 ==============
@@ -3166,7 +3217,7 @@ async function pullFromSheet(silent = false) {
     }
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
-    render();
+    renderAll();  // 雲端整批覆蓋 → 全部重畫
     if (!silent) toast(`✓ 已下載 ${state.clients.length} 業主、${state.jobs.length} 案件`, 3500);
     return true;
   } catch (err) {
@@ -4425,7 +4476,7 @@ buildRangeOptions();
 setupAutoSave();
 checkAppVersionUpdate();
 setInterval(pollAppVersion, 5 * 60 * 1000);  // 每 5 分鐘檢查網頁新版
-render();
+renderAll();  // 啟動時全部畫一次
 
 // 啟動時抓 IP 地理位置（24h 快取，失敗不擋）
 fetchDeviceLocation();

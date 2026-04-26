@@ -261,6 +261,10 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
+  /* v2.3: 隔離 reflow/repaint，每行獨立計算，大列表下大幅省 layout 成本 */
+  contain: content;
+  content-visibility: auto;
+  contain-intrinsic-size: 0 64px;
 }
 .row:last-child { border-bottom: none; }
 .row .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
