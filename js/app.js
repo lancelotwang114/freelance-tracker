@@ -2933,6 +2933,7 @@ function setSyncStatus(status, err) {
     ? `${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')} ` +
       `${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`
     : '';
+  const verText = cfg.cloudVersion ? `v${cfg.cloudVersion}` : '';
   const pendingNote = config.sheetPendingPush ? ' (待同步)' : '';
 
   let text = '';
@@ -2945,8 +2946,10 @@ function setSyncStatus(status, err) {
       break;
     case 'synced':
       icon = '✓'; cls = 'synced';
-      const byDevice = cfg.cloudLastDevice ? ` · ${cfg.cloudLastDevice}` : '';
-      text = (dtText || '已同步') + byDevice;
+      // 已取得最新 04-26 14:30 v123
+      text = '已取得最新';
+      if (dtText) text += ` ${dtText}`;
+      if (verText) text += ` ${verText}`;
       break;
     case 'offline':
       icon = '⚠'; cls = 'offline';
@@ -3299,24 +3302,46 @@ function schedulePush() {
   syncTimer = setTimeout(() => pushToSheet(true), 2000);
 }
 
-// 裝置標籤：優先使用使用者自訂名稱（每台 PC 自己存在 localStorage，不上雲）
+// 裝置標籤：每台 PC 自己存在 localStorage（不上雲）
+// 注意：瀏覽器沙盒禁止讀取 OS 的電腦名稱（如 Windows 的 hostname），
+// 所以採用「OS 偵測 + 自動產生唯一識別碼」的折衷方案。
+// 使用者可在設定頁改成有意義的名字（例如「工作室 Win」）。
 const DEVICE_NAME_KEY = 'ftDeviceName_v1';
+const DEVICE_AUTO_KEY = 'ftDeviceAutoId_v1';
+
+function getOsLabel() {
+  const ua = navigator.userAgent;
+  if (/Mobi|Android/i.test(ua)) return 'Android';
+  if (/iPhone|iPad/i.test(ua)) return 'iOS';
+  if (/Mac/i.test(ua)) return 'Mac';
+  if (/Win/i.test(ua)) return 'Windows';
+  if (/Linux/i.test(ua)) return 'Linux';
+  return 'Unknown';
+}
+
+function getOrGenerateAutoId() {
+  let auto = localStorage.getItem(DEVICE_AUTO_KEY);
+  if (!auto) {
+    // 短碼：4 個英數字，每台 PC 唯一
+    const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+    auto = `${getOsLabel()}-${rand}`;
+    localStorage.setItem(DEVICE_AUTO_KEY, auto);
+  }
+  return auto;
+}
 
 function getDeviceLabel() {
+  // 1. 使用者自訂的名字優先
   const custom = localStorage.getItem(DEVICE_NAME_KEY);
   if (custom && custom.trim()) return custom.trim();
-  // 沒設過 → 用 OS 推測
-  const ua = navigator.userAgent;
-  if (/Mobi|Android/i.test(ua)) return 'mobile';
-  if (/Mac/i.test(ua)) return 'mac';
-  if (/Win/i.test(ua)) return 'windows';
-  return 'unknown';
+  // 2. 否則用自動產生的 OS-XXXX
+  return getOrGenerateAutoId();
 }
 
 function setDeviceName(name) {
   if (!name || !name.trim()) {
     localStorage.removeItem(DEVICE_NAME_KEY);
-    toast('已清除自訂裝置名稱');
+    toast(`已清除自訂名稱（將顯示為 ${getOrGenerateAutoId()}）`);
   } else {
     localStorage.setItem(DEVICE_NAME_KEY, name.trim());
     toast(`✓ 裝置名稱：${name.trim()}`);
@@ -3328,6 +3353,9 @@ function setDeviceName(name) {
 function loadDeviceNameUI() {
   const input = document.getElementById('cfg-device-name');
   if (input) input.value = localStorage.getItem(DEVICE_NAME_KEY) || '';
+  // 同時顯示目前生效的識別（給使用者參考）
+  const hint = document.getElementById('cfg-device-name-current');
+  if (hint) hint.textContent = `目前識別：${getDeviceLabel()}`;
 }
 
 async function enableSheetSync() {
