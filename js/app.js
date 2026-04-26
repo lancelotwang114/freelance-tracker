@@ -5,7 +5,29 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.0';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.1';   // 與 index.html 的 meta 同步
+
+// 版本比較（v2.10.1）
+// 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
+// 格式：YYYY-MM-DD-vX.Y.Z → 拆成數字陣列逐位比
+// 回傳：-1=a 較舊、0=相同、1=a 較新
+function compareAppVersion(a, b) {
+  if (!a || !b) return 0;
+  const parse = (s) => {
+    const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})-v(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+    if (!m) return null;
+    return [+m[1], +m[2], +m[3], +m[4], +(m[5] || 0), +(m[6] || 0)];
+  };
+  const va = parse(a), vb = parse(b);
+  if (!va || !vb) {
+    // 格式對不上 → 退回字串比較
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  for (let i = 0; i < va.length; i++) {
+    if (va[i] !== vb[i]) return va[i] < vb[i] ? -1 : 1;
+  }
+  return 0;
+}
 
 // ============== 操作日誌（v2.9.5）==============
 const ACTION_LOG_KEY = 'ftActionLog_v1';
@@ -5070,9 +5092,12 @@ async function pullFromSheet(silent = false) {
         showStaleClientBanner(config.sheetConfig.cloudSchemaVersion);
       }
       // 雲端 appVersion **比本地新**才警告（避免反向誤報）
-      // 字串比較對 "YYYY-MM-DD-vX.Y" 格式有效（lexicographic = chronological + semver）
-      if (data.meta.appVersion && data.meta.appVersion > APP_VERSION) {
+      // v2.10.1: 改用 compareAppVersion 做數字版號比較（修 v2.9 vs v2.10 字串 bug）
+      if (data.meta.appVersion && compareAppVersion(data.meta.appVersion, APP_VERSION) > 0) {
         showStaleClientBanner(null, data.meta.appVersion);
+      } else {
+        // 本地較新或相同 → 把可能殘留的舊橫幅清掉
+        document.getElementById('stale-banner')?.remove();
       }
     }
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
@@ -6407,8 +6432,8 @@ function updateVersionBadge() {
   const el = document.getElementById('app-version-badge');
   if (!el) return;
   const local = APP_VERSION.replace(/^\d{4}-\d{2}-\d{2}-/, '');
-  // v2.9.9: 只在伺服器版本「比本地新」才顯示更新提示
-  if (serverAppVersion && serverAppVersion > APP_VERSION) {
+  // v2.10.1: 改用 compareAppVersion 做數字版號比較
+  if (serverAppVersion && compareAppVersion(serverAppVersion, APP_VERSION) > 0) {
     const remote = serverAppVersion.replace(/^\d{4}-\d{2}-\d{2}-/, '');
     el.innerHTML = `${local} · <span style="color: var(--warning); font-weight: 600;">🆕 ${remote} 點此更新</span>`;
     el.style.cursor = 'pointer';
@@ -6439,8 +6464,8 @@ async function pollAppVersion() {
     if (!match) return;
     serverAppVersion = match[1];
     updateVersionBadge();
-    // v2.9.9: 只在伺服器比本地新才提示（避免本地剛升版、CDN 還在更新時誤報）
-    if (serverAppVersion > APP_VERSION) {
+    // v2.10.1: 改用 compareAppVersion 做數字版號比較（修 v2.9 vs v2.10 字串 bug）
+    if (compareAppVersion(serverAppVersion, APP_VERSION) > 0) {
       const remind = document.getElementById('version-remind');
       if (!remind) {
         const div = document.createElement('div');
