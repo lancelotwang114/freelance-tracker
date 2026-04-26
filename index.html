@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-26-v1.8">
+<meta name="app-version" content="2026-04-26-v1.9">
 <title>外包收益與排程管理</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -638,6 +638,26 @@
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closePaidDateModal()">取消</button>
       <button class="btn btn-primary" onclick="confirmPaidDate()">確認標記</button>
+    </div>
+  </div>
+</div>
+
+<!-- 裝置名稱提醒 Modal -->
+<div class="modal-bg" id="device-name-prompt-modal">
+  <div class="modal" style="max-width: 460px;">
+    <h2>📛 為這台裝置取個名字</h2>
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">
+      你還沒幫這台裝置設定名稱。設定後，雲端備份歷史會記錄是哪一台 PC 上傳的，方便在多台電腦之間追蹤資料變化。
+    </p>
+    <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px; padding: 8px; background: var(--bg); border-radius: 6px;">
+      ⚠️ 瀏覽器無法讀取作業系統的真實電腦名稱（這是安全限制），所以系統會自動給你一個 <code>OS-隨機4碼</code>（例：<code>Windows-A7F3</code>）。建議改成自己看得懂的名字。
+    </p>
+    <label style="font-size: 13px;">這台裝置叫什麼？</label>
+    <input type="text" id="device-name-prompt-input" placeholder="例：工作室 Win、家裡 MacBook" style="margin: 6px 0 4px;">
+    <div id="device-name-prompt-current" style="font-size: 12px; color: var(--muted); margin-bottom: 12px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="skipDeviceNamePrompt()">先跳過</button>
+      <button class="btn btn-primary" onclick="saveDeviceNameFromPrompt()">儲存名稱</button>
     </div>
   </div>
 </div>

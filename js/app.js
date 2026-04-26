@@ -3082,8 +3082,8 @@ async function pushToSheet(silent = false, force = false) {
       body: JSON.stringify({
         action: 'save',
         token: cfg.apiToken,
-        deviceLabel: getDeviceLabel(),
-        snapshotNote: `from ${getDeviceLabel()}`,
+        deviceLabel: getDeviceLabelForUpload(),
+        snapshotNote: `from ${getDeviceLabelForUpload()}`,
         data: { clients: state.clients, jobs: state.jobs }
       })
     });
@@ -3250,7 +3250,7 @@ async function manualSnapshot() {
         action: 'manualSnapshot',
         token: cfg.apiToken,
         note,
-        deviceLabel: getDeviceLabel()
+        deviceLabel: getDeviceLabelForUpload()
       })
     });
     const data = await resp.json();
@@ -3356,6 +3356,90 @@ function loadDeviceNameUI() {
   // 同時顯示目前生效的識別（給使用者參考）
   const hint = document.getElementById('cfg-device-name-current');
   if (hint) hint.textContent = `目前識別：${getDeviceLabel()}`;
+}
+
+// ============== IP + 地理位置（24 小時快取）==============
+const DEVICE_LOCATION_KEY = 'ftDeviceLocation_v1';
+let cachedDeviceLocation = null;
+
+async function fetchDeviceLocation() {
+  // 24 小時快取
+  try {
+    const cached = localStorage.getItem(DEVICE_LOCATION_KEY);
+    if (cached) {
+      const obj = JSON.parse(cached);
+      if (Date.now() - obj.fetchedAt < 24 * 60 * 60 * 1000) {
+        cachedDeviceLocation = obj;
+        return obj;
+      }
+    }
+  } catch (_) {}
+  // 呼叫 ipapi.co（HTTPS 免金鑰）
+  try {
+    const resp = await fetch('https://ipapi.co/json/');
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data.ip) return null;
+    const loc = {
+      ip: data.ip,
+      city: data.city || '',
+      region: data.region || '',
+      country: data.country_name || '',
+      isp: (data.org || '').slice(0, 40),
+      fetchedAt: Date.now()
+    };
+    localStorage.setItem(DEVICE_LOCATION_KEY, JSON.stringify(loc));
+    cachedDeviceLocation = loc;
+    return loc;
+  } catch (err) {
+    return null;  // 抓不到就算了，不擋主流程
+  }
+}
+
+// 給上傳/snapshot 用：附加地理位置（裝置名 @ 城市）
+function getDeviceLabelForUpload() {
+  const base = getDeviceLabel();
+  const loc = cachedDeviceLocation;
+  if (!loc) return base;
+  const where = loc.city || loc.country;
+  const ip = loc.ip ? ` ${loc.ip}` : '';
+  if (where) return `${base} @ ${where}${ip}`;
+  return base + ip;
+}
+
+// ============== 裝置名稱提醒 modal ==============
+const DEVICE_PROMPT_DISMISSED_KEY = 'ftDeviceNamePromptDismissed_v1';
+
+function maybeShowDeviceNamePrompt() {
+  // 已設過名稱 → 不顯示
+  if (localStorage.getItem(DEVICE_NAME_KEY)) return;
+  // 已經跳過 → 不再煩
+  if (localStorage.getItem(DEVICE_PROMPT_DISMISSED_KEY) === 'true') return;
+  // 還沒啟用同步 → 不需要顯示（沒設備衝突）
+  if (!config.sheetSyncEnabled) return;
+  // 顯示
+  const modal = document.getElementById('device-name-prompt-modal');
+  if (!modal) return;
+  const hint = document.getElementById('device-name-prompt-current');
+  if (hint) hint.textContent = `現在使用的自動識別：${getOrGenerateAutoId()}`;
+  document.getElementById('device-name-prompt-input').value = '';
+  modal.classList.add('open');
+}
+
+function saveDeviceNameFromPrompt() {
+  const val = document.getElementById('device-name-prompt-input').value.trim();
+  if (!val) {
+    toast('請輸入裝置名稱，或選「先跳過」');
+    return;
+  }
+  setDeviceName(val);
+  document.getElementById('device-name-prompt-modal').classList.remove('open');
+}
+
+function skipDeviceNamePrompt() {
+  localStorage.setItem(DEVICE_PROMPT_DISMISSED_KEY, 'true');
+  document.getElementById('device-name-prompt-modal').classList.remove('open');
+  toast('已跳過。設定頁可隨時更改裝置名稱。', 4000);
 }
 
 async function enableSheetSync() {
@@ -3914,6 +3998,9 @@ checkAppVersionUpdate();
 setInterval(pollAppVersion, 5 * 60 * 1000);  // 每 5 分鐘檢查網頁新版
 render();
 
+// 啟動時抓 IP 地理位置（24h 快取，失敗不擋）
+fetchDeviceLocation();
+
 // 啟動時若同步已啟用，自動從 Sheet 拉取最新資料
 if (config.sheetSyncEnabled && config.sheetConfig?.apiUrl && config.sheetConfig?.apiToken) {
   setTimeout(async () => {
@@ -3924,6 +4011,8 @@ if (config.sheetSyncEnabled && config.sheetConfig?.apiUrl && config.sheetConfig?
       setSyncStatus('offline', '雲端優先模式 - 唯讀中');
     }
     setupAutoPoll();
+    // 同步運作後再提醒設裝置名（避免新使用者一進來就被多個 modal 蓋）
+    setTimeout(maybeShowDeviceNamePrompt, 1500);
   }, 500);
 } else {
   setSyncStatus('idle');
