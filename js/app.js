@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.8.1';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.0';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -816,7 +816,7 @@ function computeAlerts() {
     const dom = new Date().getDate();
     const startDay = config.monthEndReminderDay || 25;
     if (dom >= startDay) {
-      const thisMonthUnpaid = active.filter(j => j.done && !j.paid && getMonth(j.date) === thisMonth());
+      const thisMonthUnpaid = active.filter(j => j.done && !jobIsFullyPaid(j) && getMonth(j.date) === thisMonth());
       if (thisMonthUnpaid.length) {
         const amt = thisMonthUnpaid.reduce((s,j) => s + (+j.amount||0), 0);
         alerts.push({
@@ -851,7 +851,7 @@ function computeAlerts() {
       const daysUntil = Math.ceil((billingDate - now) / (1000 * 60 * 60 * 24));
       if (daysUntil < 0 || daysUntil > remindDays) return;
       // 該業主有沒有未收款的案件可請？
-      const billable = active.filter(j => j.clientId === c.id && j.done && !j.paid);
+      const billable = active.filter(j => j.clientId === c.id && j.done && !jobIsFullyPaid(j));
       if (!billable.length) return;
       const amt = billable.reduce((s,j) => s + (+j.amount||0), 0);
       const dateStr = `${billingDate.getMonth()+1}/${billingDate.getDate()}`;
@@ -878,6 +878,35 @@ function computeAlerts() {
       });
     }
   });
+
+  // 5c. v2.9: 部分收款尾款提醒 — 收過訂金但尾款超過 N 天沒收
+  if (config.enableUnpaidLongAlert !== false) {
+    const tailDays = +config.unpaidRemindDays || 7;
+    const tailThreshold = addDays(new Date(), -tailDays);
+    const tailPending = active.filter(j => {
+      if (jobIsFullyPaid(j)) return false;
+      const pTotal = jobPaidTotal(j);
+      if (pTotal <= 0) return false;  // 完全沒收 → 由其他規則處理
+      // 最後一筆 payment 的日期
+      const lastPay = (j.payments || []).map(p => p.date).filter(Boolean).sort().slice(-1)[0];
+      if (!lastPay) return false;
+      return lastPay <= tailThreshold;
+    });
+    if (tailPending.length) {
+      const amt = tailPending.reduce((s,j) => s + jobUnpaidAmount(j), 0);
+      const sample = tailPending.slice(0, 2).map(j => {
+        const c = getClient(j.clientId);
+        return `${c?.name || '?'} 尾款 ${fmt(jobUnpaidAmount(j)).replace('NT$','').trim()}`;
+      }).join('、');
+      alerts.push({
+        type: 'tail-pending',
+        icon: '🟣',
+        title: `${tailPending.length} 筆部分收款的尾款拖款`,
+        desc: sample + (tailPending.length > 2 ? '…' : '') + ` · 共待收 ${fmt(amt)}`,
+        onClick: () => { lockJobsToIds(tailPending.map(j=>j.id), `🟣 尾款拖款（${tailPending.length} 筆）`); switchTab('jobs'); }
+      });
+    }
+  }
 
   // 5b. 智慧待收款警告（v2.2）：每個業主的歷史平均收款週期，超過該週期 1.5 倍的案件
   const slowJobs = config.enableSlowPayAlert !== false ? computeSlowPayJobs(active) : [];
@@ -1056,13 +1085,16 @@ function renderYearComparison() {
   const byYear = {};
   let lastYearSamePeriod = 0;
 
+  // v2.9: 改用 payment 日期歸年（更精確）
   activeJobs().forEach(j => {
-    if (!j.paid || !j.date) return;
-    const y = j.date.slice(0, 4);
-    byYear[y] = (byYear[y] || 0) + (+j.amount||0);
-    if (+y === thisYear - 1 && j.date.slice(5) <= sameMonthDay) {
-      lastYearSamePeriod += (+j.amount||0);
-    }
+    (j.payments || []).forEach(p => {
+      if (!p.date) return;
+      const y = p.date.slice(0, 4);
+      byYear[y] = (byYear[y] || 0) + (+p.amount || 0);
+      if (+y === thisYear - 1 && p.date.slice(5) <= sameMonthDay) {
+        lastYearSamePeriod += (+p.amount || 0);
+      }
+    });
   });
 
   if (Object.keys(byYear).length === 0) {
@@ -1210,9 +1242,10 @@ function renderJobs() {
     { v: 'pending', label: '未完成' },
     { v: 'prepaid', label: '已收·待做' },
     { v: 'done-unpaid', label: '完成待收款' },
+    { v: 'partial', label: '🔶 部分收款' },   // v2.9
     { v: 'paid', label: '已完成已收款' },
     { v: 'cancelled', label: '🚫 已取消' },
-    { v: 'estimate', label: '📄 估價單' }   // v2.6
+    { v: 'estimate', label: '📄 估價單' }
   ];
   const usedTags = getUsedTags();
   // 第一排：本月、全部、各年份
@@ -1296,8 +1329,10 @@ function renderJobs() {
   }
   else if (fm) jobs = jobs.filter(j => jobBelongMonth(j) === fm);
   if (state.filters.clientId !== 'all') jobs = jobs.filter(j => j.clientId === state.filters.clientId);
-  // 'estimate' 狀態已在前面用 isEstimate 篩過了，這邊只處理其他 jobStatus
-  if (state.filters.status !== 'all' && state.filters.status !== 'estimate') {
+  // 'estimate' 狀態已在前面用 isEstimate 篩過了，'partial' 用 paymentTotal 判斷
+  if (state.filters.status === 'partial') {
+    jobs = jobs.filter(j => !j.cancelled && !j.isEstimate && jobPaidTotal(j) > 0 && !jobIsFullyPaid(j));
+  } else if (state.filters.status !== 'all' && state.filters.status !== 'estimate') {
     jobs = jobs.filter(j => jobStatus(j) === state.filters.status);
   }
   if (state.filters.tag && state.filters.tag !== 'all') jobs = jobs.filter(j => j.tag === state.filters.tag);
@@ -1307,9 +1342,10 @@ function renderJobs() {
   if (!jobs.length) { container.innerHTML = emptyState('沒有符合條件的案件', '換個篩選或新增一筆'); return; }
   // 計算合計時排除取消案件
   const activeInList = jobs.filter(j => !j.cancelled);
-  const total = activeInList.reduce((s,j) => s + (+j.amount||0), 0);
-  const paidTotal = activeInList.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const unpaidTotal = activeInList.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  // v2.9: 用 finalAmount + paymentTotal 計算
+  const total = activeInList.reduce((s,j) => s + jobFinalAmount(j), 0);
+  const paidTotal = activeInList.reduce((s,j) => s + jobPaidTotal(j), 0);
+  const unpaidTotal = activeInList.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);
   const cancelledCount = jobs.filter(j => j.cancelled).length;
   // 鎖定篩選 banner
   const lockBanner = state.filters.jobIdsOnly
@@ -1526,8 +1562,8 @@ function renderClients() {
   // 為每個業主計算統計與排序鍵
   let list = state.clients.map(c => {
     const clientJobs = activeJobs().filter(j => j.clientId === c.id);
-    const totalAmt = clientJobs.reduce((s,j) => s + (+j.amount||0), 0);
-    const unpaidAmt = clientJobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+    const totalAmt = clientJobs.reduce((s,j) => s + jobFinalAmount(j), 0);
+    const unpaidAmt = clientJobs.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);
     const lastDate = clientJobs.map(j => j.date || '').sort().reverse()[0] || '';
     return { client: c, totalAmt, unpaidAmt, lastDate };
   });
@@ -1550,9 +1586,10 @@ function renderClients() {
     const clientJobs = activeJobs().filter(j => j.clientId === c.id);
     const m = thisMonth();
     const mJobs = clientJobs.filter(j => jobBelongMonth(j) === m);
-    const mPaid = mJobs.filter(j => j.paid).reduce((s,j)=>s+(+j.amount||0),0);
-    const mUnpaid = mJobs.filter(j => j.done && !j.paid).reduce((s,j)=>s+(+j.amount||0),0);
-    const allUnpaid = clientJobs.filter(j => j.done && !j.paid).reduce((s,j)=>s+(+j.amount||0),0);
+    // v2.9: 已收用 payment.date 在本月的金額；待收用 jobUnpaidAmount
+    const mPaid = clientJobs.reduce((s,j) => s + (j.payments || []).filter(p => getMonth(p.date) === m).reduce((ss,p) => ss + (+p.amount||0), 0), 0);
+    const mUnpaid = mJobs.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);
+    const allUnpaid = clientJobs.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);
     // 分潤資訊
     const introducer = c.commissionTo ? state.clients.find(x => x.id === c.commissionTo) : null;
     const commissionInfo = (c.commissionRate > 0 && introducer)
@@ -1909,6 +1946,8 @@ function renderRevenue() {
   // v2.7
   renderBusyCycle();
   renderHourlyTrend();
+  // v2.9: 收款時間軸
+  renderPaymentTimeline();
 }
 
 function fillEmptyBuckets(keys, mode) {
@@ -2134,7 +2173,7 @@ function renderTagPie() {
 
   const tagAmounts = {};
   activeJobs().forEach(j => {
-    if (!j.paid) return;
+    if (!jobIsFullyPaid(j) && jobPaidTotal(j) === 0) return;
     const tag = j.tag || '未分類';
     tagAmounts[tag] = (tagAmounts[tag] || 0) + jobNetAmount(j);
   });
@@ -2195,11 +2234,17 @@ function renderHeatmap() {
   const W = (cell + gap) * weeks + 30;
   const H = (cell + gap) * 7 + 24;
 
-  // 計算每天的收款金額
+  // 計算每天的收款金額（v2.9: 用 payments 各自日期 + 比例分配 net amount）
   const byDay = {};
   activeJobs().forEach(j => {
-    if (!j.paid || !j.paidAt) return;
-    byDay[j.paidAt] = (byDay[j.paidAt] || 0) + jobNetAmount(j);
+    const final = jobFinalAmount(j);
+    if (final <= 0) return;
+    const net = jobNetAmount(j);
+    (j.payments || []).forEach(p => {
+      if (!p.date) return;
+      const portion = (+p.amount || 0) / final;  // 該筆 payment 佔總比例
+      byDay[p.date] = (byDay[p.date] || 0) + Math.round(net * portion);
+    });
   });
 
   const today = new Date();
@@ -3249,6 +3294,69 @@ async function exportInvoicePDF() {
   } catch (err) {
     toast('匯出失敗：' + err.message);
   }
+}
+
+// ============== v2.9: 收款時間軸 ==============
+function renderPaymentTimeline() {
+  const box = document.getElementById('rev-payment-timeline');
+  if (!box) return;
+  // 收集所有 payment（按月分組）
+  const byMonth = {};
+  activeJobs().forEach(j => {
+    (j.payments || []).forEach(p => {
+      if (!p.date) return;
+      const m = p.date.slice(0, 7);
+      if (!byMonth[m]) byMonth[m] = { total: 0, count: 0, byClient: {} };
+      byMonth[m].total += +p.amount || 0;
+      byMonth[m].count++;
+      const c = getClient(j.clientId);
+      const cname = c?.name || '?';
+      byMonth[m].byClient[cname] = (byMonth[m].byClient[cname] || 0) + (+p.amount || 0);
+    });
+  });
+
+  // 取最近 12 個月（含空月）
+  const now = new Date();
+  const months = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+  }
+
+  const max = Math.max(...months.map(m => byMonth[m]?.total || 0), 1);
+  if (max === 1) {
+    box.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--muted); font-size: 13px;">最近 12 個月還沒有收款紀錄</div>';
+    return;
+  }
+
+  const total = months.reduce((s,m) => s + (byMonth[m]?.total || 0), 0);
+  const avgMonthly = Math.round(total / months.filter(m => byMonth[m]?.total > 0).length || 1);
+
+  const bars = months.map(m => {
+    const data = byMonth[m] || { total: 0, count: 0 };
+    const h = data.total > 0 ? Math.max(8, (data.total / max) * 140) : 4;
+    const isCurrent = m === months[months.length - 1];
+    const yymm = m.slice(2);  // 26-04
+    return `<div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;" title="${m}：${fmt(data.total)} (${data.count} 筆)">
+      <div style="font-size: 10px; color: var(--muted);">${data.total>0 ? Math.round(data.total/1000)+'k' : ''}</div>
+      <div style="height: ${h}px; width: 70%; background: ${isCurrent?'var(--primary)':'var(--success)'}; border-radius: 3px; opacity: ${data.total>0?1:0.3};"></div>
+      <div style="font-size: 10px; color: var(--muted); white-space: nowrap;">${yymm}</div>
+    </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px;">
+      <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+        <div style="font-size: 11px; color: var(--muted);">12 個月總入帳</div>
+        <div style="font-size: 18px; font-weight: 700; color: var(--success);">${fmt(total)}</div>
+      </div>
+      <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+        <div style="font-size: 11px; color: var(--muted);">月平均（有入帳的月份）</div>
+        <div style="font-size: 18px; font-weight: 700;">${fmt(avgMonthly)}</div>
+      </div>
+    </div>
+    <div style="display: flex; gap: 4px; align-items: flex-end; height: 170px;">${bars}</div>
+  `;
 }
 
 // ============== v2.7: 忙閒週期分析 ==============
@@ -4317,12 +4425,18 @@ function copyInvoiceText() {
     const m = getMonth(j.date);
     return m >= rangeStart && m <= rangeEnd;
   }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
-  const paid = jobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const unpaid = jobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  const paid = jobs.reduce((s,j) => s + jobPaidTotal(j), 0);
+  const unpaid = jobs.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);
   const txt = `${periodLabel} ${c.name} 工作明細\n\n` +
     jobs.map(j => {
-      const st = j.paid ? '✓已收' : (j.done ? '$待收' : '進行中');
-      return `${j.date} | ${j.title} | ${fmt(+j.amount||0)} | ${st}${j.details?'\n  '+j.details:''}`;
+      const final = jobFinalAmount(j);
+      const disc = jobDiscountAmount(j);
+      const pTotal = jobPaidTotal(j);
+      const st = jobIsFullyPaid(j) ? '✓已收' :
+                 (pTotal > 0 ? `部分收款 (已收${fmt(pTotal).replace('NT$','')})` :
+                 (j.done ? '$待收' : '進行中'));
+      const amtStr = disc > 0 ? `${fmt(+j.amount||0)} − ${fmt(disc).replace('NT$','')} = ${fmt(final)}` : fmt(final);
+      return `${j.date} | ${j.title} | ${amtStr} | ${st}${j.details?'\n  '+j.details:''}`;
     }).join('\n') +
     `\n\n本次請款（待收款）：${fmt(unpaid)}` +
     (paid ? `\n已收款：${fmt(paid)}` : '');
@@ -6207,8 +6321,8 @@ function maybeGenerateMonthlySnapshot() {
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lmKey = lastMonth.getFullYear() + '-' + String(lastMonth.getMonth() + 1).padStart(2, '0');
   const lmJobs = state.jobs.filter(j => !j.cancelled && getMonth(jobBelongMonth(j)) === lmKey);
-  const total = lmJobs.reduce((s,j) => s + (+j.amount||0), 0);
-  const paid = lmJobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  const total = lmJobs.reduce((s,j) => s + jobFinalAmount(j), 0);
+  const paid = lmJobs.reduce((s,j) => s + jobPaidTotal(j), 0);
   const note = `${lmKey} 月報：${lmJobs.length} 案件、總額 ${fmt(total)}、已收 ${fmt(paid)}、未收 ${fmt(total - paid)}`;
 
   fetch(cfg.apiUrl, {

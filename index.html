@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.8.1">
+<meta name="app-version" content="2026-04-27-v2.9.0">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -225,6 +225,13 @@
       <h3>🔥 工作熱圖（最近 365 天）</h3>
       <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">每格代表一天的收款金額，顏色越深 = 那天越忙</p>
       <div id="rev-heatmap"></div>
+    </div>
+
+    <!-- v2.9: 收款時間軸 -->
+    <div class="card">
+      <h3>💵 收款時間軸（最近 12 個月）</h3>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">每個月實際入帳金額（按 payment 日期歸月）</p>
+      <div id="rev-payment-timeline"></div>
     </div>
 
     <!-- v2.7: 忙閒週期 -->
