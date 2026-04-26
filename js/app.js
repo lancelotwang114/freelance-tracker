@@ -73,6 +73,63 @@ let revenueState = {
   range: 12
 };
 
+// ============== Schema 版本化框架（v2.1+）==============
+// 每升一版資料模型就 +1，並新增對應的 migration 函式
+const CURRENT_SCHEMA_VERSION = 4;
+
+const SCHEMA_MIGRATIONS = {
+  // v1 → v2：加入 paid/doneAt/paidAt 欄位
+  1: function(state) {
+    state.jobs = (state.jobs || []).map(j => ({
+      ...j,
+      paid: j.paid ?? false,
+      doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
+      paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
+    }));
+  },
+  // v2 → v3：加入 cancelled / endDate / tag / commission / prepaid
+  2: function(state) {
+    state.jobs = (state.jobs || []).map(j => ({
+      ...j,
+      cancelled: j.cancelled ?? false,
+      endDate: j.endDate ?? null,
+      tag: j.tag ?? ''
+    }));
+    state.clients = (state.clients || []).map(c => ({
+      ...c,
+      commissionRate: c.commissionRate ?? 0,
+      commissionTo: c.commissionTo ?? '',
+      prepaidMode: c.prepaidMode ?? false,
+      prepayments: c.prepayments ?? []
+    }));
+  },
+  // v3 → v4：工時 + 時薪欄位（v2.1 新增）
+  3: function(state) {
+    state.jobs = (state.jobs || []).map(j => ({
+      ...j,
+      hoursWorked: j.hoursWorked ?? null  // 選填
+    }));
+  }
+};
+
+function runMigrations(state) {
+  let v = state.schemaVersion || 1;
+  let migratedCount = 0;
+  while (v < CURRENT_SCHEMA_VERSION) {
+    const fn = SCHEMA_MIGRATIONS[v];
+    if (fn) {
+      try { fn(state); migratedCount++; }
+      catch (err) { console.error(`Migration v${v} 失敗:`, err); }
+    }
+    v++;
+  }
+  state.schemaVersion = CURRENT_SCHEMA_VERSION;
+  if (migratedCount > 0) {
+    console.log(`✓ Schema migrated to v${CURRENT_SCHEMA_VERSION} (ran ${migratedCount} migrations)`);
+  }
+  return state;
+}
+
 function load() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
@@ -82,28 +139,12 @@ function load() {
   if (cfgRaw) {
     try { config = Object.assign(config, JSON.parse(cfgRaw)); } catch(e) {}
   }
-  // 強制：雲端優先 + 自動偵測永遠 ON（避免使用者誤關導致覆蓋）
+  // 強制：雲端優先 + 自動偵測永遠 ON
   config.cloudFirstMode = true;
   config.autoPollEnabled = true;
-  // 舊資料升級：確保每筆 job 都有 paid / doneAt / paidAt / cancelled / endDate / tag
-  state.jobs = (state.jobs || []).map(j => ({
-    ...j,
-    paid: j.paid ?? false,
-    cancelled: j.cancelled ?? false,
-    endDate: j.endDate ?? null,
-    tag: j.tag ?? '',
-    doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
-    paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
-  }));
 
-  // 業主 schema migration
-  state.clients = (state.clients || []).map(c => ({
-    ...c,
-    commissionRate: c.commissionRate ?? 0,
-    commissionTo: c.commissionTo ?? '',
-    prepaidMode: c.prepaidMode ?? false,
-    prepayments: c.prepayments ?? []
-  }));
+  // 跑 schema migrations
+  runMigrations(state);
 
   // 自動 migration：Esthé One 從備註轉換成儲值制（一次性）
   state.clients.forEach(c => {
@@ -114,7 +155,6 @@ function load() {
         { id: uid(), date: '2025-09-15', amount: 3000, note: 'LINEPAY' }
       ];
       c.note = '';
-      // 同時把該業主案件全部標 paid（如果還沒）
       state.jobs.forEach(j => {
         if (j.clientId === c.id && !j.paid) {
           j.paid = true;
@@ -132,6 +172,7 @@ function load() {
 
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     clients: state.clients,
     jobs: state.jobs
   }));
@@ -2166,14 +2207,31 @@ async function openJobModal() {
   document.getElementById('job-tag').value = '';
   document.getElementById('job-details').value = '';
   document.getElementById('job-amount').value = '';
+  document.getElementById('job-hours').value = '';
   document.getElementById('job-done').checked = false;
   document.getElementById('job-paid').checked = false;
   document.getElementById('job-cancelled').checked = false;
   document.getElementById('job-done-at').value = '';
   document.getElementById('job-paid-at').value = '';
+  document.getElementById('job-duplicate-btn')?.classList.add('hidden');
   refreshTagSuggestions();
   onJobClientChange();
+  updateJobHourlyHint();
   document.getElementById('job-modal').classList.add('open');
+}
+
+// 工時與時薪即時計算提示
+function updateJobHourlyHint() {
+  const hint = document.getElementById('job-hourly-hint');
+  if (!hint) return;
+  const amt = +document.getElementById('job-amount')?.value || 0;
+  const hrs = +document.getElementById('job-hours')?.value || 0;
+  if (amt > 0 && hrs > 0) {
+    const rate = Math.round(amt / hrs);
+    hint.innerHTML = `💰 平均時薪：<b>NT$ ${fmt(rate).replace('NT$', '').trim()}/hr</b>`;
+  } else {
+    hint.innerHTML = '';
+  }
 }
 
 function refreshTagSuggestions() {
@@ -2222,14 +2280,39 @@ function editJob(id) {
   document.getElementById('job-tag').value = j.tag || '';
   document.getElementById('job-details').value = j.details || '';
   document.getElementById('job-amount').value = j.amount || '';
+  document.getElementById('job-hours').value = j.hoursWorked || '';
   document.getElementById('job-done').checked = !!j.done;
   document.getElementById('job-paid').checked = !!j.paid;
   document.getElementById('job-cancelled').checked = !!j.cancelled;
   document.getElementById('job-done-at').value = j.doneAt || '';
   document.getElementById('job-paid-at').value = j.paidAt || '';
+  document.getElementById('job-duplicate-btn')?.classList.remove('hidden');
   refreshTagSuggestions();
   onJobClientChange();
+  updateJobHourlyHint();
   document.getElementById('job-modal').classList.add('open');
+}
+
+// 複製為新案件：保留欄位資料、重設日期/狀態
+function duplicateJob() {
+  if (!editingJobId) return;
+  // 切到「新增」模式但保留現有欄位
+  editingJobId = null;
+  document.getElementById('job-modal-title').textContent = '新增案件（複製自現有案件）';
+  document.getElementById('job-delete-btn').classList.add('hidden');
+  document.getElementById('job-duplicate-btn').classList.add('hidden');
+  // 清狀態（新案件預設未完成、未收款、未取消、日期改成今天）
+  document.getElementById('job-date').value = todayStr();
+  document.getElementById('job-end-date').value = '';
+  document.getElementById('job-done').checked = false;
+  document.getElementById('job-paid').checked = false;
+  document.getElementById('job-cancelled').checked = false;
+  document.getElementById('job-done-at').value = '';
+  document.getElementById('job-paid-at').value = '';
+  // 案件名稱加上「(複製)」字樣，方便辨識
+  const title = document.getElementById('job-title');
+  if (title.value && !title.value.includes('(複製)')) title.value = title.value + ' (複製)';
+  toast('✓ 已複製欄位，按儲存即可建立新案件');
 }
 
 // 勾選完成時自動填今日（如果空白）
@@ -2257,6 +2340,7 @@ function saveJob() {
   const isPaid = document.getElementById('job-paid').checked;
   const isCancelled = document.getElementById('job-cancelled').checked;
   const endDate = document.getElementById('job-end-date').value;
+  const hoursVal = document.getElementById('job-hours').value;
   const payload = {
     clientId: document.getElementById('job-client').value,
     date: document.getElementById('job-date').value,
@@ -2265,6 +2349,7 @@ function saveJob() {
     tag: document.getElementById('job-tag').value.trim(),
     details: document.getElementById('job-details').value.trim(),
     amount: +document.getElementById('job-amount').value || 0,
+    hoursWorked: hoursVal ? +hoursVal : null,  // 選填工時
     done: isDone,    // 解耦：完成獨立判斷
     paid: isPaid,    // 解耦：收款獨立判斷
     cancelled: isCancelled
@@ -3004,15 +3089,16 @@ async function pullFromSheet(silent = false) {
       if (!silent) alert('拉取失敗：' + data.error);
       return false;
     }
-    // 覆蓋本地
+    // 覆蓋本地（並跑 migration 確保新欄位齊全）
     state.clients = data.data.clients || [];
-    state.jobs = (data.data.jobs || []).map(j => ({
-      ...j,
-      paid: j.paid ?? false,
-      doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
-      paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
+    state.jobs = data.data.jobs || [];
+    state.schemaVersion = data.data.schemaVersion || 1;
+    runMigrations(state);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      clients: state.clients,
+      jobs: state.jobs
     }));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ clients: state.clients, jobs: state.jobs }));
     config.sheetConfig.lastPullAt = data.listedAt || new Date().toISOString();
     if (data.meta) {
       config.sheetConfig.cloudVersion = +data.meta.version || 0;
@@ -3212,9 +3298,16 @@ async function forceReleaseEditLock() {
 
 function startLockHeartbeat() {
   stopLockHeartbeat();
+  // 60 秒 heartbeat（後端 TTL 3 分鐘 → 至少有 2 次重試機會）
   lockHeartbeatTimer = setInterval(async () => {
     if (!myLockActive) return;
-    await acquireEditLock('heartbeat');
+    const result = await acquireEditLock('heartbeat');
+    if (!result.acquired && !result.local) {
+      // heartbeat 失敗（鎖被別人搶走或網路斷）→ toast 警告使用者
+      myLockActive = false;
+      stopLockHeartbeat();
+      toast(`⚠️ 編輯鎖失效${result.by ? '（被「' + result.by + '」接管）' : ''}！建議先關閉視窗檢查雲端狀態。`, 8000);
+    }
   }, 60 * 1000);
 }
 
@@ -3630,9 +3723,15 @@ async function showSnapshotList() {
         const tier = tierMap[s.tier] || tierMap.auto;
         const tierBadge = `<span style="background:${tier.bg}; color:${tier.color}; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:600;">${tier.label}</span>`;
         const deviceText = s.device ? ` · ${escapeHtml(s.device)}` : '';
+        // 資料大小警告（>= 160KB 接近 4 欄拆分上限 180KB）
+        const dataSize = s.dataSize || 0;
+        const sizeKB = Math.round(dataSize / 1024);
+        const sizeWarn = dataSize > 160 * 1024
+          ? ` <span style="color: var(--warning);">⚠️ ${sizeKB} KB</span>`
+          : (dataSize > 0 ? ` <span style="color: var(--muted); font-size: 11px;">${sizeKB} KB</span>` : '');
         return `<div class="snapshot-row ${cls}">
           <div class="snapshot-info">
-            <div class="snapshot-time">${s.timestamp}${tag} ${tierBadge}</div>
+            <div class="snapshot-time">${s.timestamp}${tag} ${tierBadge}${sizeWarn}</div>
             <div class="snapshot-stats">
               ${stats.clients || 0} 業主 · ${stats.jobs || 0} 案件 · 總額 ${fmt(stats.totalAmount || 0)}${deviceText}
             </div>

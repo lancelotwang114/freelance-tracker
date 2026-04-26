@@ -169,9 +169,38 @@ function readConfig_() {
 // ============== Sheet 寫入 ==============
 
 function writeAll_(data) {
-  if (data.clients) writeTable_('clients', data.clients);
-  if (data.jobs)    writeTable_('jobs',    data.jobs);
-  if (data.config)  writeConfig_(data.config);
+  // v2.1: 寫入前先建一個「rollback」用 snapshot；若寫入過程出錯則自動還原
+  let rollbackSnapshot = null;
+  try {
+    rollbackSnapshot = snapshotCurrent_('pre-write rollback', { tier: 'restore', device: 'auto-rollback' });
+  } catch (e) {
+    Logger.log('rollback snapshot 建立失敗，繼續寫入: ' + e.message);
+  }
+  try {
+    if (data.clients) writeTable_('clients', data.clients);
+    if (data.jobs)    writeTable_('jobs',    data.jobs);
+    if (data.config)  writeConfig_(data.config);
+  } catch (writeErr) {
+    Logger.log('writeAll_ 失敗，嘗試從 rollback snapshot 還原: ' + writeErr.message);
+    if (rollbackSnapshot && rollbackSnapshot.id) {
+      try {
+        const sheet = ensureSnapshotSchema_();
+        const lastRow = sheet.getLastRow();
+        if (lastRow >= 2) {
+          const values = sheet.getRange(2, 1, lastRow - 1, SNAPSHOT_COLS.length).getValues();
+          const row = values.find(r => String(r[0]) === String(rollbackSnapshot.id));
+          if (row) {
+            const oldData = JSON.parse(joinChunks_(row[6], row[7], row[8], row[9]));
+            if (oldData.clients) writeTable_('clients', oldData.clients);
+            if (oldData.jobs)    writeTable_('jobs',    oldData.jobs);
+          }
+        }
+      } catch (rollbackErr) {
+        Logger.log('rollback 也失敗了: ' + rollbackErr.message);
+      }
+    }
+    throw writeErr;  // 把原始錯誤往上拋，讓前端知道
+  }
 }
 
 function writeTable_(name, rows) {
@@ -259,7 +288,11 @@ function json_(obj) {
 // ============== Snapshot 備份機制（防止資料遺失）==============
 // v2: 分層保留 + 冷卻 + 每日強制 + 編輯鎖
 
-const SNAPSHOT_COLS = ['id', 'timestamp', 'tier', 'device', 'note', 'data'];
+// v2.1: data 欄位拆 4 份避免 Sheet 50K 字元上限
+const SNAPSHOT_COLS = ['id', 'timestamp', 'tier', 'device', 'note', 'dataSize', 'data1', 'data2', 'data3', 'data4'];
+const SNAPSHOT_DATA_COL_INDEX = 6;  // data1 在第 7 欄（0-index 6）
+const SNAPSHOT_DATA_COL_COUNT = 4;
+const CELL_MAX_CHARS = 45000;       // Sheet 單一儲存格上限 50000，留安全邊界
 const SNAPSHOT_RETENTION = {
   cooldownMinutes: 5,        // auto tier 冷卻時間
   hourlyKeepHours: 24,       // 最近 24 小時每小時保 1
@@ -267,6 +300,26 @@ const SNAPSHOT_RETENTION = {
   weeklyKeepWeeks: 12        // 過去 12 週每週保 1
 };
 const PERMANENT_TIERS = ['force', 'manual', 'restore'];
+
+/** 把長 JSON 字串切成最多 4 段 */
+function chunkData_(jsonStr) {
+  const chunks = ['', '', '', ''];
+  for (let i = 0; i < SNAPSHOT_DATA_COL_COUNT; i++) {
+    const start = i * CELL_MAX_CHARS;
+    if (start >= jsonStr.length) break;
+    chunks[i] = jsonStr.substring(start, start + CELL_MAX_CHARS);
+  }
+  // 超出 4 × 45K = 180K 警告
+  if (jsonStr.length > SNAPSHOT_DATA_COL_COUNT * CELL_MAX_CHARS) {
+    Logger.log('⚠️ Snapshot data 超過 ' + (SNAPSHOT_DATA_COL_COUNT * CELL_MAX_CHARS) + ' 字元上限：' + jsonStr.length);
+  }
+  return chunks;
+}
+
+/** 從 4 個分塊還原回完整 JSON 字串 */
+function joinChunks_(d1, d2, d3, d4) {
+  return String(d1 || '') + String(d2 || '') + String(d3 || '') + String(d4 || '');
+}
 
 /**
  * 確保 snapshots 分頁存在且為新 schema（6 欄）。
@@ -284,7 +337,7 @@ function ensureSnapshotSchema_() {
     sheet.setColumnWidth(3, 80);
     sheet.setColumnWidth(4, 120);
     sheet.setColumnWidth(5, 200);
-    sheet.setColumnWidth(6, 400);
+    sheet.setColumnWidth(6, 80);
     return sheet;
   }
   // 偵測舊 schema 並升級
@@ -292,12 +345,28 @@ function ensureSnapshotSchema_() {
   if (lastCol < SNAPSHOT_COLS.length) {
     const lastRow = sheet.getLastRow();
     if (lastRow > 1 && lastCol === 4) {
-      // 舊版 [id, timestamp, note, data] → [id, timestamp, 'legacy', '', note, data]
+      // v0 舊版 [id, timestamp, note, data] → 新版 10 欄
       const oldData = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
       sheet.clear();
       sheet.getRange(1, 1, 1, SNAPSHOT_COLS.length).setValues([SNAPSHOT_COLS]);
       sheet.setFrozenRows(1);
-      const newData = oldData.map(r => [r[0], r[1], 'legacy', '', r[2], r[3]]);
+      const newData = oldData.map(r => {
+        const data = String(r[3] || '');
+        const chunks = chunkData_(data);
+        return [r[0], r[1], 'legacy', '', r[2], data.length, chunks[0], chunks[1], chunks[2], chunks[3]];
+      });
+      sheet.getRange(2, 1, newData.length, SNAPSHOT_COLS.length).setValues(newData);
+    } else if (lastRow > 1 && lastCol === 6) {
+      // v1 中間版 [id, timestamp, tier, device, note, data] → 新版 10 欄
+      const oldData = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
+      sheet.clear();
+      sheet.getRange(1, 1, 1, SNAPSHOT_COLS.length).setValues([SNAPSHOT_COLS]);
+      sheet.setFrozenRows(1);
+      const newData = oldData.map(r => {
+        const data = String(r[5] || '');
+        const chunks = chunkData_(data);
+        return [r[0], r[1], r[2], r[3], r[4], data.length, chunks[0], chunks[1], chunks[2], chunks[3]];
+      });
       sheet.getRange(2, 1, newData.length, SNAPSHOT_COLS.length).setValues(newData);
     } else {
       sheet.getRange(1, 1, 1, SNAPSHOT_COLS.length).setValues([SNAPSHOT_COLS]);
@@ -346,8 +415,9 @@ function snapshotCurrent_(note, opts) {
     const ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
     const data = JSON.stringify(current);
     const finalNote = `[${clientCount}c, ${jobCount}j] ${note || ''}`;
+    const chunks = chunkData_(data);
 
-    sheet.appendRow([id, ts, tier, device, finalNote, data]);
+    sheet.appendRow([id, ts, tier, device, finalNote, data.length, chunks[0], chunks[1], chunks[2], chunks[3]]);
 
     // 更新 meta 的 lastSnapshotAt（只 auto/force 觸發冷卻）
     if (tier === 'auto' || tier === 'force') {
@@ -474,7 +544,13 @@ function listSnapshots_() {
   if (sheet.getLastRow() < 2) return [];
   const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, SNAPSHOT_COLS.length).getValues();
   return values.reverse().map(row => {
-    const [id, ts, tier, device, note, dataJson] = row;
+    const id = row[0];
+    const ts = row[1];
+    const tier = row[2];
+    const device = row[3];
+    const note = row[4];
+    const dataSize = +row[5] || 0;
+    const dataJson = joinChunks_(row[6], row[7], row[8], row[9]);
     let stats = { clients: 0, jobs: 0, totalAmount: 0 };
     try {
       const obj = JSON.parse(dataJson);
@@ -488,6 +564,7 @@ function listSnapshots_() {
       tier: String(tier || 'auto'),
       device: String(device || ''),
       note: String(note || ''),
+      dataSize: dataSize,
       stats
     };
   }).filter(s => s.id);
@@ -504,13 +581,15 @@ function getSnapshot_(snapshotId) {
   const row = values.find(r => String(r[0]) === String(snapshotId));
   if (!row) throw new Error('找不到 snapshot: ' + snapshotId);
   try {
+    const dataJson = joinChunks_(row[6], row[7], row[8], row[9]);
     return {
       id: String(row[0]),
       timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : String(row[1]),
       tier: String(row[2] || ''),
       device: String(row[3] || ''),
       note: String(row[4] || ''),
-      data: JSON.parse(row[5])
+      dataSize: +row[5] || 0,
+      data: JSON.parse(dataJson)
     };
   } catch (e) {
     throw new Error('Snapshot 解析失敗：' + e.message);
@@ -597,9 +676,10 @@ function setMetaField_(key, value) {
   sheet.appendRow([key, value]);
 }
 
-// ============== 編輯鎖機制（軟鎖，5 分鐘 TTL）==============
+// ============== 編輯鎖機制（軟鎖，3 分鐘 TTL）==============
+// v2.1: TTL 從 5 分鐘縮短到 3 分鐘，配合前端 60 秒 heartbeat → 過期速度更快、卡死風險更低
 
-const LOCK_TTL_MINUTES = 5;
+const LOCK_TTL_MINUTES = 3;
 
 /**
  * 取得鎖狀態（不會嘗試取得鎖）
@@ -675,7 +755,8 @@ function restoreSnapshot_(snapshotId, deviceLabel) {
   const row = values.find(r => String(r[0]) === String(snapshotId));
   if (!row) throw new Error('找不到 snapshot: ' + snapshotId);
 
-  const data = JSON.parse(row[5]);
+  const dataJson = joinChunks_(row[6], row[7], row[8], row[9]);
+  const data = JSON.parse(dataJson);
 
   // 還原前先用 'restore' tier 備份（永久保留）
   snapshotCurrent_('before restore ' + snapshotId, {

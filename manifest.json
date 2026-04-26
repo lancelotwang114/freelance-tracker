@@ -1,0 +1,20 @@
+{
+  "name": "外包收益與排程管理",
+  "short_name": "Freelance",
+  "description": "個人自由工作者的收益、案件與排程管理工具",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f8fa",
+  "theme_color": "#3b82f6",
+  "lang": "zh-TW",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

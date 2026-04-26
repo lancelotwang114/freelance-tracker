@@ -3,9 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-26-v2.0">
+<meta name="app-version" content="2026-04-27-v2.1">
+<meta name="theme-color" content="#3b82f6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Freelance">
 <title>外包收益與排程管理</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon.svg">
 <link rel="stylesheet" href="css/style.css">
+<script>
+  // 註冊 Service Worker（PWA — 可加入主畫面、離線可開）
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js').catch(() => {});
+    });
+  }
+</script>
 </head>
 <body>
 
@@ -523,8 +537,17 @@
 
     <label>細項說明（業主看得到）</label>
     <textarea id="job-details" placeholder="例：1280x400 banner x 2 張，含兩次修改"></textarea>
-    <label>金額</label>
-    <input type="number" id="job-amount" placeholder="0">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+      <div>
+        <label>金額</label>
+        <input type="number" id="job-amount" placeholder="0" oninput="updateJobHourlyHint()">
+      </div>
+      <div>
+        <label>工時（小時，選填）</label>
+        <input type="number" id="job-hours" placeholder="0" step="0.5" oninput="updateJobHourlyHint()">
+      </div>
+    </div>
+    <div id="job-hourly-hint" style="font-size: 12px; color: var(--muted); margin-top: -4px; margin-bottom: 6px; min-height: 16px;"></div>
 
     <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; margin-top: 12px;">
       <label for="job-done" class="checkbox-row" style="margin: 0;">
@@ -547,6 +570,7 @@
 
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeJobModal()">取消</button>
+      <button class="btn btn-outline hidden" id="job-duplicate-btn" onclick="duplicateJob()">📋 複製為新</button>
       <button class="btn btn-danger hidden" id="job-delete-btn" onclick="deleteJob()">刪除</button>
       <button class="btn btn-primary" onclick="saveJob()">儲存</button>
     </div>
