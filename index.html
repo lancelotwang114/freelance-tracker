@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.7.10">
+<meta name="app-version" content="2026-04-27-v2.8.0">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -735,14 +735,37 @@
     <div id="template-picker" class="hidden" style="background: var(--bg); border-radius: 8px; padding: 8px; margin-top: -4px; margin-bottom: 8px; max-height: 200px; overflow-y: auto;"></div>
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
       <div>
-        <label>金額</label>
-        <input type="number" id="job-amount" placeholder="0" oninput="updateJobHourlyHint()">
+        <label>金額（原價）</label>
+        <input type="number" id="job-amount" placeholder="0" oninput="updateJobAmountSummary()">
       </div>
       <div>
         <label>工時（小時，選填）</label>
         <input type="number" id="job-hours" placeholder="0" step="0.5" oninput="updateJobHourlyHint()">
       </div>
     </div>
+
+    <!-- v2.8.0: 折扣 -->
+    <div style="background: var(--bg); padding: 10px; border-radius: 8px; margin-bottom: 8px;">
+      <label style="margin: 0 0 4px;">折扣（選填）</label>
+      <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 6px;">
+        <label class="checkbox-row" style="margin: 0;">
+          <input type="radio" name="job-discount-type" value="none" onchange="onDiscountTypeChange()">
+          <span>無</span>
+        </label>
+        <label class="checkbox-row" style="margin: 0;">
+          <input type="radio" name="job-discount-type" value="fixed" onchange="onDiscountTypeChange()">
+          <span>折扣金額（NT$）</span>
+        </label>
+        <label class="checkbox-row" style="margin: 0;">
+          <input type="radio" name="job-discount-type" value="percent" onchange="onDiscountTypeChange()">
+          <span>折扣百分比（%）</span>
+        </label>
+      </div>
+      <input type="number" id="job-discount-value" placeholder="0" min="0" oninput="updateJobAmountSummary()" disabled>
+    </div>
+
+    <div id="job-amount-summary" style="background: var(--primary-light); color: var(--text); padding: 8px 10px; border-radius: 8px; font-size: 13px; margin-bottom: 8px; min-height: 16px;"></div>
+
     <div id="job-hourly-hint" style="font-size: 12px; color: var(--muted); margin-top: -4px; margin-bottom: 6px; min-height: 16px;"></div>
 
     <!-- v2.6: 計時器 -->
@@ -772,12 +795,46 @@
         <span>✓ 案件完成</span>
       </label>
       <input type="date" id="job-done-at" placeholder="完成日（自動填今日）" style="font-size: 13px;">
+    </div>
 
-      <label for="job-paid" class="checkbox-row" style="margin: 0;">
-        <input type="checkbox" id="job-paid" onchange="onJobPaidChange()">
-        <span>$ 已收款</span>
-      </label>
-      <input type="date" id="job-paid-at" placeholder="收款日（自動填今日）" style="font-size: 13px;">
+    <!-- v2.8.0: 收款狀況（取代單一 paid checkbox） -->
+    <div style="background: var(--bg); padding: 10px; border-radius: 8px; margin-top: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <label style="margin: 0; font-size: 13px; font-weight: 600;">💰 收款狀況</label>
+        <span id="job-payment-status-badge" style="font-size: 12px;"></span>
+      </div>
+      <div id="job-payment-summary" style="font-size: 12px; color: var(--muted); margin-bottom: 8px;"></div>
+
+      <!-- 收款紀錄列表 -->
+      <div id="job-payments-list" style="margin-bottom: 8px;"></div>
+
+      <!-- 新增收款 inline 表單 -->
+      <div id="job-payment-add-form" class="hidden" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-bottom: 8px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
+          <div>
+            <label style="font-size: 11px; color: var(--muted);">收款日期</label>
+            <input type="date" id="job-payment-add-date">
+          </div>
+          <div>
+            <label style="font-size: 11px; color: var(--muted);">金額</label>
+            <input type="number" id="job-payment-add-amount" min="0">
+          </div>
+        </div>
+        <input type="text" id="job-payment-add-note" placeholder="備註（選填，例：訂金、尾款）" style="margin-bottom: 6px;">
+        <div style="display: flex; gap: 6px; justify-content: flex-end;">
+          <button type="button" class="btn btn-ghost btn-sm" onclick="cancelAddJobPayment()">取消</button>
+          <button type="button" class="btn btn-primary btn-sm" onclick="confirmAddJobPayment()">確認新增</button>
+        </div>
+      </div>
+
+      <button type="button" class="btn btn-outline btn-sm" id="job-payment-add-btn" onclick="openAddJobPayment()">+ 新增收款</button>
+      <button type="button" class="btn btn-success btn-sm" onclick="markJobFullyPaid()">✓ 一次收齊餘額</button>
+
+      <!-- 呆帳 -->
+      <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);">
+        <label style="font-size: 12px; color: var(--muted);">呆帳金額（永遠收不到的部分，不計入收益）</label>
+        <input type="number" id="job-write-off" min="0" placeholder="0" oninput="updateJobAmountSummary()">
+      </div>
     </div>
 
     <label for="job-cancelled" class="checkbox-row danger-checkbox">

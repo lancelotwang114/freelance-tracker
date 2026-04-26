@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.10';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.8.0';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -85,7 +85,7 @@ let revenueState = {
 
 // ============== Schema 版本化框架（v2.1+）==============
 // 每升一版資料模型就 +1，並新增對應的 migration 函式
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 const SCHEMA_MIGRATIONS = {
   // v1 → v2：加入 paid/doneAt/paidAt 欄位
@@ -137,6 +137,29 @@ const SCHEMA_MIGRATIONS = {
       billingRemindDays: c.billingRemindDays ?? 3,         // 提前幾天提醒
       unpaidRemindDaysOverride: c.unpaidRemindDaysOverride ?? null  // null = 走全域設定
     }));
+  },
+  // v6 → v7：折扣 + 多筆收款紀錄 + 呆帳（v2.8.0 新增）
+  6: function(state) {
+    state.jobs = (state.jobs || []).map(j => {
+      const next = {
+        ...j,
+        discountType: j.discountType ?? 'none',   // 'none' | 'fixed' | 'percent'
+        discountValue: j.discountValue ?? 0,       // 折扣金額或百分比（正數）
+        payments: j.payments ?? [],                // [{id, date, amount, note}]
+        writeOff: j.writeOff ?? 0                  // 呆帳金額（不再追討）
+      };
+      // 自動 migrate：既有 paid+paidAt → 自動產生一筆 payment
+      if (next.paid && next.paidAt && !next.payments.length) {
+        const finalAmt = +next.amount || 0;  // 此時還沒折扣，原價就是應收
+        next.payments = [{
+          id: uid(),
+          date: next.paidAt,
+          amount: finalAmt,
+          note: '自動轉換（v2.8.0 升級）'
+        }];
+      }
+      return next;
+    });
   }
 };
 
@@ -292,6 +315,51 @@ function activeJobs() {
 }
 function estimateJobs() {
   return state.jobs.filter(j => j.isEstimate && !j.cancelled);
+}
+
+// ============== 金額計算 helpers（v2.8.0）==============
+// 折扣後的應收金額
+function jobFinalAmount(j) {
+  const base = +j.amount || 0;
+  if (j.discountType === 'fixed') return Math.max(0, base - (+j.discountValue || 0));
+  if (j.discountType === 'percent') return Math.max(0, Math.round(base * (1 - (+j.discountValue || 0) / 100)));
+  return base;
+}
+
+// 折扣金額（正數，純呈現用）
+function jobDiscountAmount(j) {
+  const base = +j.amount || 0;
+  if (j.discountType === 'fixed') return Math.min(base, +j.discountValue || 0);
+  if (j.discountType === 'percent') return Math.round(base * (+j.discountValue || 0) / 100);
+  return 0;
+}
+
+// 已收金額（payments 加總）
+function jobPaidTotal(j) {
+  return (j.payments || []).reduce((s, p) => s + (+p.amount || 0), 0);
+}
+
+// 待收金額（應收 - 已收 - 呆帳）
+function jobUnpaidAmount(j) {
+  return Math.max(0, jobFinalAmount(j) - jobPaidTotal(j) - (+j.writeOff || 0));
+}
+
+// 是否視同結清（已收 + 呆帳 >= 應收）
+function jobIsFullyPaid(j) {
+  return jobPaidTotal(j) + (+j.writeOff || 0) >= jobFinalAmount(j) && jobFinalAmount(j) > 0;
+}
+
+// 同步 paid / paidAt 與 payments（每次 payments 變動後呼叫）
+function recomputePaidStatus(j) {
+  if (jobIsFullyPaid(j)) {
+    j.paid = true;
+    // paidAt 取最後一筆 payment 的日期
+    const last = [...(j.payments || [])].sort((a,b) => (a.date||'').localeCompare(b.date||'')).slice(-1)[0];
+    j.paidAt = last ? last.date : (j.paidAt || todayStr());
+  } else {
+    j.paid = false;
+    j.paidAt = null;
+  }
 }
 
 // 案件的「歸屬月」：endDate 優先，沒有就用 date
@@ -1068,6 +1136,15 @@ function jobRow(j, ctx) {
   const subDone = (j.subtasks || []).filter(s => s.done).length;
   const subTotal = (j.subtasks || []).length;
   const subBadge = subTotal > 0 ? `<span class="tag-badge">☑️ ${subDone}/${subTotal}</span>` : '';
+  // v2.8.0: 折扣 + 部分收款 badge
+  const discAmt = jobDiscountAmount(j);
+  const discountBadge = discAmt > 0 ? `<span class="tag-badge" style="background: var(--warning-light); color: var(--warning);">折扣 ${fmt(discAmt).replace('NT$','').trim()}</span>` : '';
+  const paidTotal = jobPaidTotal(j);
+  const finalAmt = jobFinalAmount(j);
+  const partialBadge = (paidTotal > 0 && !jobIsFullyPaid(j))
+    ? `<span class="tag-badge" style="background: var(--warning-light); color: var(--warning);">已收 ${fmt(paidTotal).replace('NT$','').trim()}/${fmt(finalAmt).replace('NT$','').trim()}</span>`
+    : '';
+  const writeOffBadge = (+j.writeOff > 0) ? `<span class="tag-badge" style="background: var(--muted); color: white;">呆帳 ${fmt(j.writeOff).replace('NT$','').trim()}</span>` : '';
   const hl = highlightJobIds.has(j.id) ? ' highlight' : '';
   const isSelected = selectedSet.has(j.id);
   const selCls = isSelected ? ' selected' : '';
@@ -1078,10 +1155,10 @@ function jobRow(j, ctx) {
       <div class="bulk-checkbox ${isSelected?'checked':''}"></div>
       <div class="dot" style="background:${color}"></div>
       <div class="info">
-        <div class="title">${escapeHtml(j.title || '（無標題）')}${estimateBadge}${tagBadge}${dueBadge}${subBadge}${cancelBadge}</div>
+        <div class="title">${escapeHtml(j.title || '（無標題）')}${estimateBadge}${tagBadge}${dueBadge}${subBadge}${discountBadge}${partialBadge}${writeOffBadge}${cancelBadge}</div>
         <div class="meta">${name} · ${j.date || '無日期'}</div>
       </div>
-      <div class="amount">${fmt(+j.amount||0)}</div>
+      <div class="amount">${fmt(jobFinalAmount(j))}</div>
     </div>`;
   }
 
@@ -1098,10 +1175,10 @@ function jobRow(j, ctx) {
     </div>
     <div class="dot" style="background:${color}"></div>
     <div class="info">
-      <div class="title">${escapeHtml(j.title || '（無標題）')}${estimateBadge}${tagBadge}${dueBadge}${subBadge}${cancelBadge}</div>
+      <div class="title">${escapeHtml(j.title || '（無標題）')}${estimateBadge}${tagBadge}${dueBadge}${subBadge}${discountBadge}${partialBadge}${writeOffBadge}${cancelBadge}</div>
       <div class="meta">${name} · ${j.date || '無日期'}</div>
     </div>
-    <div class="amount">${fmt(+j.amount||0)}</div>
+    <div class="amount">${fmt(finalAmt)}</div>
   </div>`;
 }
 
@@ -3486,9 +3563,18 @@ function toggleDone(id) {
 function togglePaid(id) {
   const j = state.jobs.find(x => x.id === id); if (!j) return;
   if (j.cancelled) { toast('案件已取消，請先取消「已取消」狀態'); return; }
-  if (j.paid) {
-    j.paid = false;
-    j.paidAt = null;
+  if (jobIsFullyPaid(j)) {
+    // 取消結清：若有多筆 payments → 提示去 modal 處理；單筆/無 → 直接清掉
+    const count = (j.payments || []).length;
+    if (count > 1) {
+      toast('此案件有多筆收款紀錄，請開啟編輯視窗管理', 4000);
+      editJob(id);
+      return;
+    }
+    if (!confirm('將清除這筆案件的收款紀錄。確定？')) return;
+    j.payments = [];
+    j.writeOff = 0;
+    recomputePaidStatus(j);
     save();
     updateJobRow(id);
     renderAlerts(); renderBadge();
@@ -3532,14 +3618,18 @@ function confirmPaidDate() {
   const ids = paidDateContext.jobIds;
   let n = 0;
   state.jobs.forEach(j => {
-    if (ids.includes(j.id) && !j.paid) {
-      j.paid = true;
-      j.paidAt = dateStr;
-      n++;
-    }
+    if (!ids.includes(j.id)) return;
+    if (jobIsFullyPaid(j)) return;
+    // v2.8.0: 把待收餘額補一筆 payment（而非直接 set paid=true）
+    const remaining = jobUnpaidAmount(j);
+    if (remaining <= 0) return;
+    j.payments = j.payments || [];
+    j.payments.push({ id: uid(), date: dateStr, amount: remaining, note: '' });
+    j.payments.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+    recomputePaidStatus(j);
+    n++;
   });
   if (ids.length > 1) bulkSelected.clear();
-  // v2.7.10: 若是從 dashboard 批次觸發 → 同時清除 dash 狀態
   if (paidDateContext._fromDashBulk) {
     dashBulkExit();
   }
@@ -3570,11 +3660,15 @@ function openJobModal() {
   document.getElementById('job-amount').value = '';
   document.getElementById('job-hours').value = '';
   document.getElementById('job-done').checked = false;
-  document.getElementById('job-paid').checked = false;
   document.getElementById('job-cancelled').checked = false;
   document.getElementById('job-estimate').checked = false;
   document.getElementById('job-done-at').value = '';
-  document.getElementById('job-paid-at').value = '';
+  // v2.8.0: 折扣 + payments 重設
+  setDiscountUI('none', 0);
+  document.getElementById('job-write-off').value = '';
+  modalPayments = [];
+  cancelAddJobPayment();
+  updateJobAmountSummary();
   document.getElementById('job-duplicate-btn')?.classList.add('hidden');
   document.getElementById('job-export-estimate-btn')?.classList.add('hidden');
   document.getElementById('job-confirm-estimate-btn')?.classList.add('hidden');
@@ -3586,6 +3680,155 @@ function openJobModal() {
   onJobClientChange();
   updateJobHourlyHint();
   document.getElementById('job-modal').classList.add('open');
+}
+
+// ============== Modal 內折扣與收款狀況（v2.8.0）==============
+let modalPayments = [];   // [{id, date, amount, note}]
+
+function onDiscountTypeChange() {
+  const type = document.querySelector('input[name="job-discount-type"]:checked')?.value || 'none';
+  const inp = document.getElementById('job-discount-value');
+  inp.disabled = (type === 'none');
+  if (type === 'none') inp.value = '';
+  if (type === 'percent') {
+    inp.max = 100;
+    inp.placeholder = '0-100';
+  } else {
+    inp.removeAttribute('max');
+    inp.placeholder = '0';
+  }
+  updateJobAmountSummary();
+}
+
+function setDiscountUI(type, value) {
+  document.querySelectorAll('input[name="job-discount-type"]').forEach(r => r.checked = (r.value === (type || 'none')));
+  document.getElementById('job-discount-value').value = value || '';
+  document.getElementById('job-discount-value').disabled = (!type || type === 'none');
+}
+
+// 即時更新「原價 - 折扣 = 應收 / 已收 / 待收」摘要
+function updateJobAmountSummary() {
+  const summary = document.getElementById('job-amount-summary');
+  if (!summary) return;
+  const base = +document.getElementById('job-amount').value || 0;
+  const type = document.querySelector('input[name="job-discount-type"]:checked')?.value || 'none';
+  const dval = +document.getElementById('job-discount-value').value || 0;
+  let final = base, disc = 0;
+  if (type === 'fixed') { disc = Math.min(base, dval); final = Math.max(0, base - disc); }
+  else if (type === 'percent') { disc = Math.round(base * dval / 100); final = Math.max(0, base - disc); }
+
+  const paid = modalPayments.reduce((s,p) => s + (+p.amount || 0), 0);
+  const writeOff = +document.getElementById('job-write-off')?.value || 0;
+  const unpaid = Math.max(0, final - paid - writeOff);
+
+  let html = `原價 <b>${fmt(base)}</b>`;
+  if (disc > 0) html += ` − 折扣 <b style="color: var(--warning);">${fmt(disc)}</b> = 應收 <b style="color: var(--primary);">${fmt(final)}</b>`;
+  if (paid > 0 || writeOff > 0) {
+    html += `<br>已收 <b style="color: var(--success);">${fmt(paid)}</b>`;
+    if (writeOff > 0) html += ` · 呆帳 <b style="color: var(--muted);">${fmt(writeOff)}</b>`;
+    html += ` · 待收 <b style="color: ${unpaid>0?'var(--warning)':'var(--success)'};">${fmt(unpaid)}</b>`;
+  }
+  summary.innerHTML = html;
+  updateJobHourlyHint();
+  renderJobPayments();
+}
+
+function renderJobPayments() {
+  const list = document.getElementById('job-payments-list');
+  if (!list) return;
+  if (!modalPayments.length) {
+    list.innerHTML = '<div style="font-size: 12px; color: var(--muted); padding: 4px 0;">尚無收款紀錄</div>';
+  } else {
+    list.innerHTML = modalPayments.map((p, i) => `
+      <div style="display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 13px;">
+        <span style="color: var(--muted); min-width: 92px;">${p.date || '-'}</span>
+        <span style="flex: 1; color: var(--success); font-weight: 600;">+${fmt(+p.amount||0)}</span>
+        <span style="color: var(--muted); font-size: 12px;">${escapeHtml(p.note||'')}</span>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="removeJobPayment(${i})" style="color: var(--danger); padding: 2px 6px;">✕</button>
+      </div>
+    `).join('');
+  }
+  // 更新狀態 badge
+  const base = +document.getElementById('job-amount').value || 0;
+  const type = document.querySelector('input[name="job-discount-type"]:checked')?.value || 'none';
+  const dval = +document.getElementById('job-discount-value').value || 0;
+  let final = base;
+  if (type === 'fixed') final = Math.max(0, base - dval);
+  else if (type === 'percent') final = Math.max(0, Math.round(base * (1 - dval / 100)));
+  const paid = modalPayments.reduce((s,p) => s + (+p.amount || 0), 0);
+  const writeOff = +document.getElementById('job-write-off')?.value || 0;
+  const badge = document.getElementById('job-payment-status-badge');
+  if (badge) {
+    if (final === 0) badge.innerHTML = '';
+    else if (paid + writeOff >= final) badge.innerHTML = '<span style="background: var(--success-light); color: var(--success); padding: 1px 6px; border-radius: 4px; font-weight: 600;">✓ 已結清</span>';
+    else if (paid > 0) badge.innerHTML = `<span style="background: var(--warning-light); color: var(--warning); padding: 1px 6px; border-radius: 4px; font-weight: 600;">部分收款</span>`;
+    else badge.innerHTML = `<span style="background: var(--danger-light); color: var(--danger); padding: 1px 6px; border-radius: 4px; font-weight: 600;">未收款</span>`;
+  }
+  const summaryEl = document.getElementById('job-payment-summary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `應收 <b>${fmt(final)}</b> · 已收 <b style="color: var(--success);">${fmt(paid)}</b> · 待收 <b style="color: ${final-paid-writeOff>0?'var(--warning)':'var(--muted)'};">${fmt(Math.max(0, final - paid - writeOff))}</b>`;
+  }
+}
+
+function openAddJobPayment() {
+  document.getElementById('job-payment-add-form').classList.remove('hidden');
+  document.getElementById('job-payment-add-btn').classList.add('hidden');
+  document.getElementById('job-payment-add-date').value = todayStr();
+  // 預設帶入剩餘待收金額
+  const base = +document.getElementById('job-amount').value || 0;
+  const type = document.querySelector('input[name="job-discount-type"]:checked')?.value || 'none';
+  const dval = +document.getElementById('job-discount-value').value || 0;
+  let final = base;
+  if (type === 'fixed') final = Math.max(0, base - dval);
+  else if (type === 'percent') final = Math.max(0, Math.round(base * (1 - dval / 100)));
+  const paid = modalPayments.reduce((s,p) => s + (+p.amount || 0), 0);
+  const writeOff = +document.getElementById('job-write-off')?.value || 0;
+  const remaining = Math.max(0, final - paid - writeOff);
+  document.getElementById('job-payment-add-amount').value = remaining || '';
+  document.getElementById('job-payment-add-note').value = '';
+  setTimeout(() => document.getElementById('job-payment-add-amount').focus(), 50);
+}
+
+function cancelAddJobPayment() {
+  document.getElementById('job-payment-add-form').classList.add('hidden');
+  document.getElementById('job-payment-add-btn').classList.remove('hidden');
+}
+
+function confirmAddJobPayment() {
+  const date = document.getElementById('job-payment-add-date').value;
+  const amount = +document.getElementById('job-payment-add-amount').value;
+  const note = document.getElementById('job-payment-add-note').value || '';
+  if (!date) { toast('請選日期'); return; }
+  if (!amount || amount <= 0) { toast('金額無效'); return; }
+  modalPayments.push({ id: uid(), date, amount, note });
+  modalPayments.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  cancelAddJobPayment();
+  updateJobAmountSummary();
+  toast('✓ 已新增收款');
+}
+
+function removeJobPayment(i) {
+  modalPayments.splice(i, 1);
+  updateJobAmountSummary();
+  toast('已刪除收款紀錄');
+}
+
+// 一鍵把待收餘額補一筆收款
+function markJobFullyPaid() {
+  const base = +document.getElementById('job-amount').value || 0;
+  const type = document.querySelector('input[name="job-discount-type"]:checked')?.value || 'none';
+  const dval = +document.getElementById('job-discount-value').value || 0;
+  let final = base;
+  if (type === 'fixed') final = Math.max(0, base - dval);
+  else if (type === 'percent') final = Math.max(0, Math.round(base * (1 - dval / 100)));
+  const paid = modalPayments.reduce((s,p) => s + (+p.amount || 0), 0);
+  const writeOff = +document.getElementById('job-write-off')?.value || 0;
+  const remaining = Math.max(0, final - paid - writeOff);
+  if (remaining <= 0) { toast('已經結清了'); return; }
+  modalPayments.push({ id: uid(), date: todayStr(), amount: remaining, note: '一次收齊' });
+  modalPayments.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  updateJobAmountSummary();
+  toast(`✓ 已補一筆 ${fmt(remaining)}`);
 }
 
 // 工時與時薪即時計算提示
@@ -3650,11 +3893,15 @@ function editJob(id) {
   document.getElementById('job-amount').value = j.amount || '';
   document.getElementById('job-hours').value = j.hoursWorked || '';
   document.getElementById('job-done').checked = !!j.done;
-  document.getElementById('job-paid').checked = !!j.paid;
   document.getElementById('job-cancelled').checked = !!j.cancelled;
   document.getElementById('job-estimate').checked = !!j.isEstimate;
   document.getElementById('job-done-at').value = j.doneAt || '';
-  document.getElementById('job-paid-at').value = j.paidAt || '';
+  // v2.8.0: 折扣 + payments
+  setDiscountUI(j.discountType || 'none', j.discountValue || 0);
+  document.getElementById('job-write-off').value = j.writeOff || '';
+  modalPayments = JSON.parse(JSON.stringify(j.payments || []));
+  cancelAddJobPayment();
+  updateJobAmountSummary();
   document.getElementById('job-duplicate-btn')?.classList.remove('hidden');
   // 估價單模式：顯示「轉正」與「估價單 PDF」按鈕
   document.getElementById('job-export-estimate-btn')?.classList.toggle('hidden', !j.isEstimate);
@@ -3714,13 +3961,17 @@ function closeJobModal() {
 
 function saveJob() {
   const isDone = document.getElementById('job-done').checked;
-  const isPaid = document.getElementById('job-paid').checked;
   const isCancelled = document.getElementById('job-cancelled').checked;
   const endDate = document.getElementById('job-end-date').value;
   const hoursVal = document.getElementById('job-hours').value;
   const isEstimate = document.getElementById('job-estimate').checked;
-  // 計時器：把當前累計時間存下來
   const timeSpentMs = getCurrentTimerMs();
+  // v2.8.0: 折扣 + payments
+  const discountType = document.querySelector('input[name="job-discount-type"]:checked')?.value || 'none';
+  const discountValue = +document.getElementById('job-discount-value').value || 0;
+  const writeOff = +document.getElementById('job-write-off').value || 0;
+  const manualDoneAt = document.getElementById('job-done-at').value;
+
   const payload = {
     clientId: document.getElementById('job-client').value,
     date: document.getElementById('job-date').value,
@@ -3729,46 +3980,35 @@ function saveJob() {
     tag: document.getElementById('job-tag').value.trim(),
     details: document.getElementById('job-details').value.trim(),
     amount: +document.getElementById('job-amount').value || 0,
-    hoursWorked: hoursVal ? +hoursVal : null,  // 選填工時
-    done: isDone,    // 解耦：完成獨立判斷
-    paid: isPaid,    // 解耦：收款獨立判斷
+    hoursWorked: hoursVal ? +hoursVal : null,
+    done: isDone,
     cancelled: isCancelled,
-    isEstimate: isEstimate,         // v2.6: 估價單模式
-    subtasks: [...modalSubtasks],   // v2.6: 子任務
-    timeSpentMs: timeSpentMs        // v2.6: 累計工時毫秒
+    isEstimate: isEstimate,
+    subtasks: [...modalSubtasks],
+    timeSpentMs: timeSpentMs,
+    // v2.8.0:
+    discountType: discountType,
+    discountValue: discountValue,
+    payments: [...modalPayments],
+    writeOff: writeOff
   };
   if (!payload.title) { toast('請輸入案件名稱'); return; }
-  // 新版：手動輸入的 doneAt / paidAt 優先採用
-  const manualDoneAt = document.getElementById('job-done-at').value;
-  const manualPaidAt = document.getElementById('job-paid-at').value;
 
   if (editingJobId) {
     const j = state.jobs.find(x => x.id === editingJobId);
-    // 完成日：若手動填了用手動值；否則勾起來補今日 / 取消勾就清空
-    if (manualDoneAt && payload.done) {
-      payload.doneAt = manualDoneAt;
-    } else if (!j.done && payload.done) {
-      payload.doneAt = todayStr();
-    } else if (!payload.done) {
-      payload.doneAt = null;
-    } else {
-      payload.doneAt = j.doneAt;
-    }
-    // 收款日：同樣邏輯，但解耦 done/paid（可只勾收款不勾完成）
-    if (manualPaidAt && payload.paid) {
-      payload.paidAt = manualPaidAt;
-    } else if (!j.paid && payload.paid) {
-      payload.paidAt = todayStr();
-    } else if (!payload.paid) {
-      payload.paidAt = null;
-    } else {
-      payload.paidAt = j.paidAt;
-    }
+    // 完成日邏輯（保留原樣）
+    if (manualDoneAt && payload.done) payload.doneAt = manualDoneAt;
+    else if (!j.done && payload.done) payload.doneAt = todayStr();
+    else if (!payload.done) payload.doneAt = null;
+    else payload.doneAt = j.doneAt;
     Object.assign(j, payload);
+    // 依 payments 自動推算 paid / paidAt
+    recomputePaidStatus(j);
   } else {
     payload.doneAt = payload.done ? (manualDoneAt || todayStr()) : null;
-    payload.paidAt = payload.paid ? (manualPaidAt || todayStr()) : null;
-    state.jobs.push({ id: uid(), ...payload });
+    const newJob = { id: uid(), ...payload };
+    recomputePaidStatus(newJob);
+    state.jobs.push(newJob);
   }
   save(); closeJobModal(); render(); toast('已儲存');
 }
