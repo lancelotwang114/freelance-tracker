@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.5';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.6';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -5240,24 +5240,59 @@ async function restoreSnapshot(id) {
 const APP_VERSION_KEY = 'freelance-tracker-app-version';
 let serverAppVersion = null;  // 由 pollAppVersion 更新，給 UI 顯示用
 
-// v2.7.5: 強制清除所有快取 + 重新載入（取代 Ctrl+F5）
+// v2.7.5+: 終極強制刷新 — 清掉所有可能讓網頁卡舊版的東西
+// （但保留 localStorage 業主案件設定）
 async function hardReload() {
-  if (!confirm('將清除瀏覽器快取（Service Worker / Cache）並重新載入網頁。\n\n這樣可以強制取得最新版本（類似 Ctrl+F5）。\n\n本機資料（業主、案件、設定）不會受影響。\n\n確定？')) return;
+  if (!confirm('🔄 將清除：\n  · Service Worker\n  · 所有 Cache（HTTP、Cache API）\n  · sessionStorage\n  · Cookies\n\n比 Ctrl+F5 更徹底，可解決頁面一直卡在舊版的問題。\n\n業主、案件、設定（localStorage）不會被清除。\n\n確定？')) return;
   toastProgress('🔄 清除快取中…');
+
+  // 1. 取消所有 Service Worker 註冊（連同其控制範圍）
   try {
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs.map(r => r.unregister()));
     }
+  } catch (err) { console.error('SW unregister failed:', err); }
+
+  // 2. 刪除所有 Cache API 快取
+  try {
     if ('caches' in window) {
       const keys = await caches.keys();
       await Promise.all(keys.map(k => caches.delete(k)));
     }
-  } catch (err) {
-    console.error('清除快取失敗', err);
-  }
-  // 用 query string 破 HTTP cache，再 replace 確保不會走 back/forward cache
-  const url = location.pathname + '?_=' + Date.now();
+  } catch (err) { console.error('Cache delete failed:', err); }
+
+  // 3. 清空 sessionStorage（不動 localStorage）
+  try { sessionStorage.clear(); } catch (_) {}
+
+  // 4. 清掉 cookies（這個網域下的）
+  try {
+    document.cookie.split(';').forEach(c => {
+      const eq = c.indexOf('=');
+      const name = (eq > -1 ? c.slice(0, eq) : c).trim();
+      if (!name) return;
+      // 多種 path / domain 組合確保清乾淨
+      const expire = 'expires=Thu, 01 Jan 1970 00:00:00 GMT';
+      document.cookie = `${name}=; ${expire}; path=/`;
+      document.cookie = `${name}=; ${expire}; path=${location.pathname}`;
+      document.cookie = `${name}=; ${expire}; path=/; domain=${location.hostname}`;
+      document.cookie = `${name}=; ${expire}; path=/; domain=.${location.hostname}`;
+    });
+  } catch (_) {}
+
+  // 5. 嘗試清掉 IndexedDB（部分瀏覽器支援）
+  try {
+    if (indexedDB.databases) {
+      const dbs = await indexedDB.databases();
+      await Promise.all(dbs.map(db => new Promise(resolve => {
+        const req = indexedDB.deleteDatabase(db.name);
+        req.onsuccess = req.onerror = req.onblocked = resolve;
+      })));
+    }
+  } catch (_) {}
+
+  // 6. 用 unique query string 破 HTTP cache + replace 避免 back/forward cache
+  const url = location.pathname + '?_=' + Date.now() + '&hr=1';
   location.replace(url);
 }
 
