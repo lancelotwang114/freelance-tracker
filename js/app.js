@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.2';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.3';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -5819,7 +5819,15 @@ async function previewSnapshot(id) {
       body: JSON.stringify({ action: 'getSnapshot', token: cfg.apiToken, snapshotId: id })
     });
     const data = await resp.json();
-    if (!data.ok) { alert('失敗：' + data.error); return; }
+    if (!data.ok) {
+      // v2.9.3: JSON 解析失敗（之前 4-chunk 截斷的舊 snapshot）→ 友善提示
+      if (data.error && data.error.includes('Snapshot 解析失敗')) {
+        alert('⚠️ 此 snapshot 已損壞（之前 4-chunk 上限導致截斷，無法還原）\n\n以後新的 snapshot（10-chunk 上限）不會再有此問題。\n\n建議：刪除此筆並用最近建立的 snapshot 還原。');
+        return;
+      }
+      alert('失敗：' + data.error);
+      return;
+    }
     const snap = data.snapshot;
     const d = snap.data;
     const clients = d.clients || [];
