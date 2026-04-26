@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.7.6">
+<meta name="app-version" content="2026-04-27-v2.7.7">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -46,8 +46,8 @@
         </div>
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
-        <button id="hard-reload-btn" onclick="hardReload()" title="強制刷新（清除所有快取、Service Worker、Cookie）" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; font-size: 14px; cursor: pointer; color: var(--text);">🔄</button>
-        <button id="theme-toggle-btn" onclick="cycleTheme()" title="切換深淺色模式" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; font-size: 14px; cursor: pointer; color: var(--text);">🌗</button>
+        <button id="hard-reload-btn" onclick="hardReload()" title="強制刷新（清除所有快取、Service Worker、Cookie）" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text); white-space: nowrap;">🔄 刷新頁面</button>
+        <button id="theme-toggle-btn" onclick="cycleTheme()" title="切換深淺色模式" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 14px; cursor: pointer; color: var(--text);">🌗</button>
         <div id="sync-indicator" class="sync-indicator sync-idle" onclick="switchTab('settings')" title="點擊開啟設定頁">○ 未啟用</div>
       </div>
     </div>
