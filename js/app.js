@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.6';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.7';   // 與 index.html 的 meta 同步
 
 // ============== 操作日誌（v2.9.5）==============
 const ACTION_LOG_KEY = 'ftActionLog_v1';

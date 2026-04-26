@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.9.6">
+<meta name="app-version" content="2026-04-27-v2.9.7">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1004,8 +1004,8 @@
   </div>
 </div>
 
-<!-- v2.9.5: Snapshot Diff Modal -->
-<div class="modal-bg" id="snapshot-diff-modal">
+<!-- v2.9.5: Snapshot Diff Modal（z-index 高一級，疊在備份歷史 modal 之上）-->
+<div class="modal-bg" id="snapshot-diff-modal" style="z-index: 30;">
   <div class="modal" style="max-width: 640px;">
     <h2>📂 還原預覽</h2>
     <div id="snapshot-diff-content" style="max-height: 60vh; overflow-y: auto;"></div>
