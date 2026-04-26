@@ -24,21 +24,25 @@ const API_TOKEN = 'CHANGE_ME_TO_A_LONG_RANDOM_STRING';
 // 這個 token 絕對不能外流 — 有這個 token 的人就能讀寫你全部資料。
 // ================================
 
-// v2.9.1: 補上所有 v2.6+ 新欄位（之前漏掉造成 push round-trip 砍欄位）
+// v2.9.2: 加 _extra 欄位 — 任何前端送來但不在 COLS 裡的欄位
+// 自動以 JSON 形式存進 _extra；pull 時自動展開
+// 這樣以後前端加新欄位永遠不會丟資料
 const COLS = {
   clients: [
     'id', 'name', 'color', 'note',
     'commissionRate', 'commissionTo',
     'prepaidMode', 'prepayments',
-    'billingDay', 'billingRemindDays', 'unpaidRemindDaysOverride'  // v2.7.9
+    'billingDay', 'billingRemindDays', 'unpaidRemindDaysOverride',
+    '_extra'   // ← 兜底欄位
   ],
   jobs: [
     'id', 'clientId', 'date', 'title', 'details', 'amount',
     'done', 'paid', 'doneAt', 'paidAt',
     'endDate', 'tag', 'cancelled',
-    'hoursWorked',                                       // v2.6
-    'isEstimate', 'subtasks', 'timeSpentMs',             // v2.6
-    'discountType', 'discountValue', 'payments', 'writeOff'  // v2.8.0
+    'hoursWorked',
+    'isEstimate', 'subtasks', 'timeSpentMs',
+    'discountType', 'discountValue', 'payments', 'writeOff',
+    '_extra'   // ← 兜底欄位
   ],
   config:  ['key', 'value']
 };
@@ -161,15 +165,21 @@ function readTable_(name) {
     .filter(row => row[0])  // 跳過沒有 id 的空列
     .map(row => {
       const obj = {};
+      let extraData = null;
       cols.forEach((c, i) => {
         let v = row[i];
+        // _extra 欄位 → 解 JSON 後 merge 進 obj（最後處理，不覆蓋已知欄位）
+        if (c === '_extra') {
+          if (v) { try { extraData = JSON.parse(v); } catch (_) {} }
+          return;
+        }
         // 數值
         if (c === 'amount' || c === 'commissionRate' || c === 'discountValue' ||
             c === 'writeOff' || c === 'timeSpentMs' || c === 'billingDay' ||
             c === 'billingRemindDays') {
           v = Number(v) || 0;
         }
-        // hoursWorked / unpaidRemindDaysOverride 可為 null
+        // 可為 null
         if (c === 'hoursWorked' || c === 'unpaidRemindDaysOverride') {
           v = (v === '' || v == null) ? null : (Number(v) || 0);
         }
@@ -189,6 +199,12 @@ function readTable_(name) {
         if (c === 'discountType' && (!v || v === '')) v = 'none';
         obj[c] = v;
       });
+      // 把 _extra 裡的所有 key 補進 obj（不覆蓋既有欄位）
+      if (extraData && typeof extraData === 'object') {
+        Object.keys(extraData).forEach(k => {
+          if (!(k in obj)) obj[k] = extraData[k];
+        });
+      }
       return obj;
     });
 }
@@ -262,10 +278,20 @@ function writeTable_(name, rows) {
     sheet.getRange(2, 1, lastRow - 1, cols.length).clearContent();
   }
   if (!rows || !rows.length) return;
+  // v2.9.2: 已知欄位（不含 _extra）
+  const knownCols = cols.filter(c => c !== '_extra');
   const values = rows.map(r => cols.map(c => {
+    if (c === '_extra') {
+      // 收集所有不在 COLS 裡的 keys → 序列化存入 _extra
+      const extra = {};
+      Object.keys(r || {}).forEach(k => {
+        if (!knownCols.includes(k) && k !== '_extra') extra[k] = r[k];
+      });
+      return Object.keys(extra).length ? JSON.stringify(extra) : '';
+    }
     const v = r[c];
     if (v === null || v === undefined) return '';
-    // 陣列／物件欄位（例如 prepayments）以 JSON 字串儲存，避免拍平丟失
+    // 陣列／物件欄位（例如 prepayments、payments、subtasks）以 JSON 字串儲存
     if (Array.isArray(v) || (typeof v === 'object' && !(v instanceof Date))) {
       return JSON.stringify(v);
     }
