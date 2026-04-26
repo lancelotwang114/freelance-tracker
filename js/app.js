@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.7';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.8';   // 與 index.html 的 meta 同步
 
 // ============== 操作日誌（v2.9.5）==============
 const ACTION_LOG_KEY = 'ftActionLog_v1';
@@ -3683,6 +3683,7 @@ function drawInvoice() {
   const unpaidTotal = jobs.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);  // 待收（已完成）
   const pendingTotal = jobs.filter(j => !j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0); // 進行中
   const writeOffTotal = jobs.reduce((s,j) => s + (+j.writeOff || 0), 0);        // 呆帳合計
+  const showDiscount = discountTotal > 0;  // v2.9.8: 沒有折扣 → 隱藏整欄
 
   const u = config.userInfo || {};
   const hasMyInfo = u.name || u.email || u.phone;
@@ -3710,7 +3711,7 @@ function drawInvoice() {
       </div>
     </div>
     ${jobs.length ? `<table>
-      <thead><tr><th>日期</th><th>項目</th><th>說明</th><th class="num">原價</th><th class="num">折扣</th><th class="num">應收</th><th class="num">已收</th><th>狀態</th></tr></thead>
+      <thead><tr><th>日期</th><th>項目</th><th>說明</th><th class="num">原價</th>${showDiscount ? '<th class="num">折扣</th>' : ''}<th class="num">應收</th><th class="num">已收</th><th>狀態</th></tr></thead>
       <tbody>
         ${jobs.map(j => {
           const final = jobFinalAmount(j);
@@ -3736,7 +3737,7 @@ function drawInvoice() {
             <td>${escapeHtml(j.title||'-')}</td>
             <td style="color:var(--muted); font-size: 13px;">${escapeHtml(j.details||'')}</td>
             <td class="num">${fmt(gross)}</td>
-            <td class="num" style="color: ${disc>0?'var(--warning)':'var(--muted)'};">${disc>0 ? '−' + fmt(disc).replace('NT$','').trim() : '—'}</td>
+            ${showDiscount ? `<td class="num" style="color: ${disc>0?'var(--warning)':'var(--muted)'};">${disc>0 ? '−' + fmt(disc).replace('NT$','').trim() : '—'}</td>` : ''}
             <td class="num"><b>${fmt(final)}</b></td>
             <td class="num" style="color: ${paid>=final?'var(--success)':'var(--muted)'};">${paid>0 ? fmt(paid) : '—'}</td>
             <td>${stLabel}</td>
@@ -3747,7 +3748,7 @@ function drawInvoice() {
         <tr style="border-top: 2px solid var(--text); font-weight: 600;">
           <td colspan="3" style="text-align: right;">合計</td>
           <td class="num">${fmt(grossTotal)}</td>
-          <td class="num" style="color: var(--warning);">${discountTotal>0 ? '−' + fmt(discountTotal).replace('NT$','').trim() : '—'}</td>
+          ${showDiscount ? `<td class="num" style="color: var(--warning);">−${fmt(discountTotal).replace('NT$','').trim()}</td>` : ''}
           <td class="num">${fmt(finalTotal)}</td>
           <td class="num" style="color: var(--success);">${fmt(paidTotal)}</td>
           <td></td>
