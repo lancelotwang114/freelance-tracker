@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.9.5">
+<meta name="app-version" content="2026-04-27-v2.9.6">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -11,7 +11,10 @@
 <title>外包收益與排程管理</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/icon.svg">
-<link rel="stylesheet" href="css/style.css">
+<script>
+  // v2.9.6: CSS 也加 cache buster（必須在 link 出現前用 document.write）
+  document.write('<link rel="stylesheet" href="css/style.css?v=' + encodeURIComponent(document.querySelector('meta[name="app-version"]').content) + '">');
+</script>
 <!-- 請款單匯出（PDF / PNG）— 點按鈕時才動態載入，啟動不變慢 -->
 <script>
   // 註冊 Service Worker（PWA — 可加入主畫面、離線可開）
@@ -1147,6 +1150,14 @@
   </div>
 </div>
 
-<script src="js/app.js"></script>
+<script>
+  // v2.9.6: 用 meta 版號當 cache buster — 每次升版自動繞過 HTTP cache
+  (function(){
+    var v = document.querySelector('meta[name="app-version"]')?.content || Date.now();
+    var s = document.createElement('script');
+    s.src = 'js/app.js?v=' + encodeURIComponent(v);
+    document.body.appendChild(s);
+  })();
+</script>
 </body>
 </html>
