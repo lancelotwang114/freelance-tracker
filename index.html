@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-26-v1.9">
+<meta name="app-version" content="2026-04-26-v2.0">
 <title>外包收益與排程管理</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -423,7 +423,16 @@
             <input type="text" id="cfg-device-name" placeholder="例：工作室 Win" style="flex: 1;">
             <button class="btn btn-primary btn-sm" onclick="setDeviceName(document.getElementById('cfg-device-name').value)">儲存</button>
           </div>
-          <div id="cfg-device-name-current" style="font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
+          <div id="cfg-device-name-current" style="font-size: 12px; color: var(--muted); margin-top: 6px; padding: 6px 8px; background: var(--bg); border-radius: 6px;"></div>
+          <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
+            <button class="btn btn-outline btn-sm" onclick="requestPreciseLocation()">🎯 啟用精確位置（GPS，可看到「區」）</button>
+            <button class="btn btn-ghost btn-sm" onclick="clearPreciseLocation()">清除</button>
+          </div>
+          <p style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+            預設只用 IP 抓到城市（例：Taipei）。<br>
+            點上方按鈕會請求 GPS 權限，反向解析後可拿到「區」（例：台北市 信義區）。<br>
+            位置資訊只用於備份歷史的辨識，不會傳給其他第三方。
+          </p>
         </div>
 
         <div style="background: var(--success-light); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--success); margin-top: 4px;">

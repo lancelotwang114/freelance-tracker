@@ -3353,9 +3353,21 @@ function setDeviceName(name) {
 function loadDeviceNameUI() {
   const input = document.getElementById('cfg-device-name');
   if (input) input.value = localStorage.getItem(DEVICE_NAME_KEY) || '';
-  // 同時顯示目前生效的識別（給使用者參考）
+  // 顯示目前生效的識別 + 位置資訊
   const hint = document.getElementById('cfg-device-name-current');
-  if (hint) hint.textContent = `目前識別：${getDeviceLabel()}`;
+  if (hint) {
+    const loc = cachedDeviceLocation || {};
+    let locText = '';
+    if (loc.preciseCity || loc.preciseDistrict) {
+      locText = `🎯 精確：${loc.preciseCity || ''} ${loc.preciseDistrict || ''}`;
+    } else if (loc.city) {
+      locText = `📍 IP 城市：${loc.city}`;
+    } else {
+      locText = '📍 位置：尚未取得';
+    }
+    hint.innerHTML = `目前識別：<b>${escapeHtml(getDeviceLabel())}</b><br>${locText}` +
+      (loc.ip ? ` · IP ${loc.ip}` : '');
+  }
 }
 
 // ============== IP + 地理位置（24 小時快取）==============
@@ -3396,15 +3408,77 @@ async function fetchDeviceLocation() {
   }
 }
 
-// 給上傳/snapshot 用：附加地理位置（裝置名 @ 城市）
+// 給上傳/snapshot 用：附加地理位置（裝置名 @ 城市 區 IP）
 function getDeviceLabelForUpload() {
   const base = getDeviceLabel();
   const loc = cachedDeviceLocation;
   if (!loc) return base;
-  const where = loc.city || loc.country;
   const ip = loc.ip ? ` ${loc.ip}` : '';
+  // 優先用精確位置（GPS 反向地理編碼）
+  if (loc.preciseCity || loc.preciseDistrict) {
+    const parts = [loc.preciseCity, loc.preciseDistrict].filter(Boolean).join(' ');
+    return `${base} @ ${parts}${ip}`;
+  }
+  // 退回 IP 城市（不到區）
+  const where = loc.city || loc.country;
   if (where) return `${base} @ ${where}${ip}`;
   return base + ip;
+}
+
+// 使用 HTML5 Geolocation 取得精確位置 + BigDataCloud 反向地理編碼
+async function requestPreciseLocation() {
+  if (!navigator.geolocation) {
+    toast('這個瀏覽器不支援精確定位');
+    return;
+  }
+  toastProgress('🎯 請在瀏覽器跳出的視窗按「允許」...');
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    try {
+      // BigDataCloud 免金鑰、HTTPS、支援繁中
+      const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=zh-TW`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      const district = data.locality || (data.localityInfo?.administrative || []).slice(-1)[0]?.name || '';
+      const city = data.city || data.principalSubdivision || '';
+
+      const loc = cachedDeviceLocation || {};
+      loc.preciseCity = city;
+      loc.preciseDistrict = district;
+      loc.preciseLat = +lat.toFixed(3);
+      loc.preciseLng = +lng.toFixed(3);
+      loc.preciseFetchedAt = Date.now();
+      cachedDeviceLocation = loc;
+      localStorage.setItem(DEVICE_LOCATION_KEY, JSON.stringify(loc));
+
+      toast(`✓ 精確位置：${city} ${district}`, 4000);
+      updateSheetSyncBadge();
+      loadDeviceNameUI();
+    } catch (err) {
+      toast('反向地理編碼失敗：' + err.message);
+    }
+  }, (err) => {
+    let msg = '無法取得位置';
+    if (err.code === 1) msg = '使用者拒絕授權';
+    else if (err.code === 2) msg = '位置服務無法使用（可能未開 GPS）';
+    else if (err.code === 3) msg = '取得位置超時';
+    toast('❌ ' + msg, 4000);
+  }, { timeout: 15000, maximumAge: 60 * 60 * 1000, enableHighAccuracy: false });
+}
+
+// 清除精確位置（之後又會退回 IP 城市）
+function clearPreciseLocation() {
+  if (cachedDeviceLocation) {
+    delete cachedDeviceLocation.preciseCity;
+    delete cachedDeviceLocation.preciseDistrict;
+    delete cachedDeviceLocation.preciseLat;
+    delete cachedDeviceLocation.preciseLng;
+    delete cachedDeviceLocation.preciseFetchedAt;
+    localStorage.setItem(DEVICE_LOCATION_KEY, JSON.stringify(cachedDeviceLocation));
+  }
+  toast('已清除精確位置（改用 IP 城市）');
+  loadDeviceNameUI();
 }
 
 // ============== 裝置名稱提醒 modal ==============
