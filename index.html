@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.5">
+<meta name="app-version" content="2026-04-27-v2.6">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -659,6 +659,27 @@
     </div>
     <div id="job-hourly-hint" style="font-size: 12px; color: var(--muted); margin-top: -4px; margin-bottom: 6px; min-height: 16px;"></div>
 
+    <!-- v2.6: 計時器 -->
+    <div id="job-timer-box" style="background: var(--bg); border-radius: 8px; padding: 10px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px;">
+      <div style="font-size: 12px; color: var(--muted);">⏱️ 計時器</div>
+      <div id="job-timer-display" style="font-family: monospace; font-size: 18px; font-weight: 600; flex: 1;">00:00:00</div>
+      <button type="button" class="btn btn-primary btn-sm" id="job-timer-toggle" onclick="toggleJobTimer()">▶ 開始</button>
+      <button type="button" class="btn btn-outline btn-sm" id="job-timer-finish" onclick="finishJobTimer()">✓ 結束計時</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="resetJobTimer()">重設</button>
+    </div>
+
+    <!-- v2.6: 子任務 / Checklist -->
+    <div style="margin-bottom: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <label style="margin: 0;">子任務 <span id="job-subtasks-counter" style="color: var(--muted); font-size: 12px; font-weight: 400;"></span></label>
+      </div>
+      <div id="job-subtasks-list" style="margin: 4px 0;"></div>
+      <div style="display: flex; gap: 6px;">
+        <input type="text" id="job-subtask-input" placeholder="輸入子任務按 Enter 新增" onkeydown="if(event.key==='Enter'){event.preventDefault();addJobSubtask();}">
+        <button type="button" class="btn btn-outline btn-sm" onclick="addJobSubtask()">＋</button>
+      </div>
+    </div>
+
     <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; margin-top: 12px;">
       <label for="job-done" class="checkbox-row" style="margin: 0;">
         <input type="checkbox" id="job-done" onchange="onJobDoneChange()">
@@ -678,9 +699,17 @@
       <span>🚫 已取消（不計入收益統計但保留紀錄）</span>
     </label>
 
+    <!-- v2.6: 估價單模式 -->
+    <label for="job-estimate" class="checkbox-row" style="background: var(--warning-light); padding: 8px 10px; border-radius: 6px;">
+      <input type="checkbox" id="job-estimate">
+      <span>📄 估價單模式（草稿；不計入統計，業主確認後可轉正）</span>
+    </label>
+
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeJobModal()">取消</button>
       <button class="btn btn-outline hidden" id="job-duplicate-btn" onclick="duplicateJob()">📋 複製為新</button>
+      <button class="btn btn-outline hidden" id="job-export-estimate-btn" onclick="exportSingleJobPDF()">📄 估價單 PDF</button>
+      <button class="btn btn-success hidden" id="job-confirm-estimate-btn" onclick="confirmEstimateAsJob()">✓ 接案：轉為正式</button>
       <button class="btn btn-danger hidden" id="job-delete-btn" onclick="deleteJob()">刪除</button>
       <button class="btn btn-primary" onclick="saveJob()">儲存</button>
     </div>

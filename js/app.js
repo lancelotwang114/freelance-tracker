@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.5';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.6';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -76,7 +76,7 @@ let revenueState = {
 
 // ============== Schema 版本化框架（v2.1+）==============
 // 每升一版資料模型就 +1，並新增對應的 migration 函式
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 const SCHEMA_MIGRATIONS = {
   // v1 → v2：加入 paid/doneAt/paidAt 欄位
@@ -109,6 +109,15 @@ const SCHEMA_MIGRATIONS = {
     state.jobs = (state.jobs || []).map(j => ({
       ...j,
       hoursWorked: j.hoursWorked ?? null  // 選填
+    }));
+  },
+  // v4 → v5：估價、子任務、累計工時（v2.6 新增）
+  4: function(state) {
+    state.jobs = (state.jobs || []).map(j => ({
+      ...j,
+      isEstimate: j.isEstimate ?? false,    // 草稿/估價單模式
+      subtasks: j.subtasks ?? [],            // [{id, text, done}]
+      timeSpentMs: j.timeSpentMs ?? 0        // 計時器累計毫秒
     }));
   }
 };
@@ -237,7 +246,11 @@ function jobStatus(j) {
 
 // 用於統計：取消的案件不計入
 function activeJobs() {
-  return state.jobs.filter(j => !j.cancelled);
+  // v2.6: 估價單不算正式案件，排除在統計外
+  return state.jobs.filter(j => !j.cancelled && !j.isEstimate);
+}
+function estimateJobs() {
+  return state.jobs.filter(j => j.isEstimate && !j.cancelled);
 }
 
 // 案件的「歸屬月」：endDate 優先，沒有就用 date
@@ -855,6 +868,11 @@ function jobRow(j) {
     dueBadge = `<span class="due-badge ${cls}">截止 ${j.endDate.slice(5)}</span>`;
   }
   const tagBadge = j.tag ? `<span class="tag-badge">${escapeHtml(j.tag)}</span>` : '';
+  // v2.6: 估價單與子任務 badge
+  const estimateBadge = j.isEstimate ? '<span class="due-badge urgent" style="background: var(--warning); color: white;">📄 估價</span>' : '';
+  const subDone = (j.subtasks || []).filter(s => s.done).length;
+  const subTotal = (j.subtasks || []).length;
+  const subBadge = subTotal > 0 ? `<span class="tag-badge">☑️ ${subDone}/${subTotal}</span>` : '';
   const hl = highlightJobIds.has(j.id) ? ' highlight' : '';
   const isSelected = bulkSelected.has(j.id);
   const selCls = isSelected ? ' selected' : '';
@@ -885,7 +903,7 @@ function jobRow(j) {
     </div>
     <div class="dot" style="background:${color}"></div>
     <div class="info">
-      <div class="title">${escapeHtml(j.title || '（無標題）')}${tagBadge}${dueBadge}${cancelBadge}</div>
+      <div class="title">${escapeHtml(j.title || '（無標題）')}${estimateBadge}${tagBadge}${dueBadge}${subBadge}${cancelBadge}</div>
       <div class="meta">${name} · ${j.date || '無日期'}</div>
     </div>
     <div class="amount">${fmt(+j.amount||0)}</div>
@@ -909,7 +927,8 @@ function renderJobs() {
     { v: 'prepaid', label: '已收·待做' },
     { v: 'done-unpaid', label: '完成待收款' },
     { v: 'paid', label: '已完成已收款' },
-    { v: 'cancelled', label: '🚫 已取消' }
+    { v: 'cancelled', label: '🚫 已取消' },
+    { v: 'estimate', label: '📄 估價單' }   // v2.6
   ];
   const usedTags = getUsedTags();
   // 第一排：本月、全部、各年份
@@ -964,7 +983,13 @@ function renderJobs() {
         : '') +
     '</div>';
 
-  let jobs = [...state.jobs];
+  // v2.6: 估價單模式單獨檢視；其他狀態自動排除估價單
+  let jobs;
+  if (state.filters.status === 'estimate') {
+    jobs = state.jobs.filter(j => j.isEstimate && !j.cancelled);
+  } else {
+    jobs = state.jobs.filter(j => !j.isEstimate);
+  }
 
   // 提醒卡片帶來的鎖定篩選（最高優先）
   if (state.filters.jobIdsOnly) {
@@ -987,7 +1012,10 @@ function renderJobs() {
   }
   else if (fm) jobs = jobs.filter(j => jobBelongMonth(j) === fm);
   if (state.filters.clientId !== 'all') jobs = jobs.filter(j => j.clientId === state.filters.clientId);
-  if (state.filters.status !== 'all') jobs = jobs.filter(j => jobStatus(j) === state.filters.status);
+  // 'estimate' 狀態已在前面用 isEstimate 篩過了，這邊只處理其他 jobStatus
+  if (state.filters.status !== 'all' && state.filters.status !== 'estimate') {
+    jobs = jobs.filter(j => jobStatus(j) === state.filters.status);
+  }
   if (state.filters.tag && state.filters.tag !== 'all') jobs = jobs.filter(j => j.tag === state.filters.tag);
   jobs.sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
@@ -2142,6 +2170,200 @@ function clickClientRank(cid) {
   switchTab('jobs');
 }
 
+// ============== Modal 內子任務（v2.6）==============
+let modalSubtasks = [];
+
+function renderJobSubtasks() {
+  const list = document.getElementById('job-subtasks-list');
+  const counter = document.getElementById('job-subtasks-counter');
+  if (!list) return;
+  if (!modalSubtasks.length) {
+    list.innerHTML = '<div style="font-size: 12px; color: var(--muted); padding: 4px 0;">尚無子任務</div>';
+    if (counter) counter.textContent = '';
+    return;
+  }
+  const done = modalSubtasks.filter(s => s.done).length;
+  if (counter) counter.textContent = `（${done}/${modalSubtasks.length}）`;
+  list.innerHTML = modalSubtasks.map((s, i) => `
+    <div style="display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 13px;">
+      <input type="checkbox" ${s.done?'checked':''} onchange="toggleJobSubtask(${i})" style="width:auto; margin:0;">
+      <span style="flex:1; ${s.done?'text-decoration:line-through; color:var(--muted);':''}">${escapeHtml(s.text)}</span>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="removeJobSubtask(${i})" style="color:var(--danger); padding:2px 6px;">✕</button>
+    </div>
+  `).join('');
+}
+
+function addJobSubtask() {
+  const inp = document.getElementById('job-subtask-input');
+  const text = (inp?.value || '').trim();
+  if (!text) return;
+  modalSubtasks.push({ id: uid(), text, done: false });
+  inp.value = '';
+  renderJobSubtasks();
+  setTimeout(() => inp.focus(), 50);
+}
+
+function toggleJobSubtask(i) {
+  if (modalSubtasks[i]) {
+    modalSubtasks[i].done = !modalSubtasks[i].done;
+    renderJobSubtasks();
+  }
+}
+
+function removeJobSubtask(i) {
+  modalSubtasks.splice(i, 1);
+  renderJobSubtasks();
+}
+
+// ============== Modal 內計時器（v2.6）==============
+let modalTimerStart = 0;     // 當前 session 開始的 timestamp（0 = 未在計時）
+let modalTimerBaseMs = 0;    // 之前累積的毫秒（從 job 載入）
+let modalTimerInterval = null;
+
+function fmtTimerMs(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = String(Math.floor(totalSec / 3600)).padStart(2, '0');
+  const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
+  const s = String(totalSec % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+function getCurrentTimerMs() {
+  const sessionMs = modalTimerStart ? (Date.now() - modalTimerStart) : 0;
+  return modalTimerBaseMs + sessionMs;
+}
+
+function refreshTimerDisplay() {
+  const el = document.getElementById('job-timer-display');
+  if (el) el.textContent = fmtTimerMs(getCurrentTimerMs());
+}
+
+function loadJobTimer(timeSpentMs) {
+  modalTimerBaseMs = +timeSpentMs || 0;
+  modalTimerStart = 0;
+  refreshTimerDisplay();
+  const btn = document.getElementById('job-timer-toggle');
+  if (btn) btn.innerHTML = '▶ 開始';
+}
+
+function toggleJobTimer() {
+  const btn = document.getElementById('job-timer-toggle');
+  if (modalTimerStart) {
+    // 暫停 → 把 session 累計到 base
+    modalTimerBaseMs += Date.now() - modalTimerStart;
+    modalTimerStart = 0;
+    if (modalTimerInterval) { clearInterval(modalTimerInterval); modalTimerInterval = null; }
+    if (btn) btn.innerHTML = '▶ 繼續';
+  } else {
+    // 開始
+    modalTimerStart = Date.now();
+    modalTimerInterval = setInterval(refreshTimerDisplay, 500);
+    if (btn) btn.innerHTML = '⏸ 暫停';
+  }
+}
+
+function resetJobTimer() {
+  if (modalTimerStart || modalTimerBaseMs > 0) {
+    if (!confirm('確定清空計時器？此案件累計工時會歸零。')) return;
+  }
+  modalTimerStart = 0;
+  modalTimerBaseMs = 0;
+  if (modalTimerInterval) { clearInterval(modalTimerInterval); modalTimerInterval = null; }
+  refreshTimerDisplay();
+  const btn = document.getElementById('job-timer-toggle');
+  if (btn) btn.innerHTML = '▶ 開始';
+}
+
+function finishJobTimer() {
+  // 暫停 + 把累計時間加到工時欄
+  if (modalTimerStart) toggleJobTimer();
+  const ms = getCurrentTimerMs();
+  if (ms <= 0) { toast('還沒開始計時'); return; }
+  const hours = +(ms / 3600000).toFixed(2);
+  const inp = document.getElementById('job-hours');
+  if (inp) {
+    const existing = +inp.value || 0;
+    inp.value = (existing + hours).toFixed(2);
+    updateJobHourlyHint();
+  }
+  toast(`✓ 已加 ${hours} 小時到工時欄`);
+}
+
+function stopJobTimerOnClose() {
+  // Modal 關閉時記錄當前計時狀態（不清除 base，因為要儲存）
+  if (modalTimerStart) {
+    modalTimerBaseMs += Date.now() - modalTimerStart;
+    modalTimerStart = 0;
+  }
+  if (modalTimerInterval) { clearInterval(modalTimerInterval); modalTimerInterval = null; }
+}
+
+// ============== 估價單（v2.6）==============
+async function exportSingleJobPDF() {
+  if (!editingJobId) { toast('請先儲存後再匯出'); return; }
+  const j = state.jobs.find(x => x.id === editingJobId);
+  if (!j) return;
+  const c = getClient(j.clientId);
+  // 用 invoice-view 同樣的 HTML 結構臨時生成
+  const tempBox = document.createElement('div');
+  tempBox.style.cssText = 'position: fixed; left: -10000px; top: 0; width: 700px; padding: 30px; background: white; color: black; font-family: -apple-system, "PingFang TC", sans-serif;';
+  const userName = config.userInfo?.name || '';
+  const tag = j.isEstimate ? '估價單' : '請款單（單筆）';
+  tempBox.innerHTML = `
+    <h1 style="font-size: 24px; margin-bottom: 8px; color: black;">${tag}</h1>
+    <div style="font-size: 13px; color: #666; margin-bottom: 16px;">
+      製單日期：${todayStr()}　${j.isEstimate ? '估價有效期：14 天' : ''}
+    </div>
+    <div style="border: 1px solid #ddd; padding: 12px; border-radius: 8px; margin-bottom: 16px; color: black;">
+      <div style="margin-bottom: 8px;"><b>業主：</b>${escapeHtml(c?.name || '?')}</div>
+      <div style="margin-bottom: 8px;"><b>${j.isEstimate ? '預計執行日期' : '案件日期'}：</b>${j.date || '-'}${j.endDate ? ' ~ ' + j.endDate : ''}</div>
+      <div style="margin-bottom: 8px;"><b>案件名稱：</b>${escapeHtml(j.title || '')}</div>
+      ${j.tag ? `<div style="margin-bottom: 8px;"><b>類型：</b>${escapeHtml(j.tag)}</div>` : ''}
+      ${j.details ? `<div style="margin-bottom: 8px;"><b>說明：</b><br><span style="white-space: pre-wrap;">${escapeHtml(j.details)}</span></div>` : ''}
+    </div>
+    <div style="background: #f7f7f7; padding: 12px; border-radius: 8px; text-align: right; color: black;">
+      <div style="font-size: 13px; color: #666;">${j.isEstimate ? '估價金額' : '應收金額'}</div>
+      <div style="font-size: 28px; font-weight: 700;">NT$ ${(+j.amount||0).toLocaleString()}</div>
+    </div>
+    ${userName ? `<div style="margin-top: 24px; font-size: 12px; color: #666; border-top: 1px solid #ddd; padding-top: 12px; color: black;">
+      <b>承製方：</b>${escapeHtml(userName)}
+      ${config.userInfo?.bankInfo ? `<br>${escapeHtml(config.userInfo.bankInfo)}` : ''}
+    </div>` : ''}
+  `;
+  document.body.appendChild(tempBox);
+  try {
+    toastProgress('🎨 渲染中...');
+    await loadScript(HTML2CANVAS_CDN);
+    const canvas = await html2canvas(tempBox, { scale: 2, backgroundColor: '#ffffff' });
+    await loadScript(JSPDF_CDN);
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const margin = 8;
+    const imgW = pageW - margin * 2;
+    const imgH = (canvas.height * imgW) / canvas.width;
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, imgW, imgH);
+    pdf.save(`${tag}_${c?.name || '案件'}_${todayStr()}.pdf`);
+    toast('✓ 已下載 PDF');
+  } catch (err) {
+    toast('匯出失敗：' + err.message);
+  } finally {
+    tempBox.remove();
+  }
+}
+
+function confirmEstimateAsJob() {
+  if (!editingJobId) return;
+  if (!confirm('確認接案？\n\n會把這張估價單轉成正式案件，計入收益統計。')) return;
+  const j = state.jobs.find(x => x.id === editingJobId);
+  if (!j) return;
+  j.isEstimate = false;
+  save();
+  toast('✓ 已轉為正式案件');
+  closeJobModal();
+  render();
+}
+
 // ============== iCal 訂閱（v2.5）==============
 function getIcalUrl() {
   const cfg = config.sheetConfig;
@@ -2864,9 +3086,16 @@ async function openJobModal() {
   document.getElementById('job-done').checked = false;
   document.getElementById('job-paid').checked = false;
   document.getElementById('job-cancelled').checked = false;
+  document.getElementById('job-estimate').checked = false;
   document.getElementById('job-done-at').value = '';
   document.getElementById('job-paid-at').value = '';
   document.getElementById('job-duplicate-btn')?.classList.add('hidden');
+  document.getElementById('job-export-estimate-btn')?.classList.add('hidden');
+  document.getElementById('job-confirm-estimate-btn')?.classList.add('hidden');
+  // v2.6: 子任務 + 計時器
+  modalSubtasks = [];
+  renderJobSubtasks();
+  loadJobTimer(0);
   refreshTagSuggestions();
   onJobClientChange();
   updateJobHourlyHint();
@@ -2937,9 +3166,17 @@ function editJob(id) {
   document.getElementById('job-done').checked = !!j.done;
   document.getElementById('job-paid').checked = !!j.paid;
   document.getElementById('job-cancelled').checked = !!j.cancelled;
+  document.getElementById('job-estimate').checked = !!j.isEstimate;
   document.getElementById('job-done-at').value = j.doneAt || '';
   document.getElementById('job-paid-at').value = j.paidAt || '';
   document.getElementById('job-duplicate-btn')?.classList.remove('hidden');
+  // 估價單模式：顯示「轉正」與「估價單 PDF」按鈕
+  document.getElementById('job-export-estimate-btn')?.classList.toggle('hidden', !j.isEstimate);
+  document.getElementById('job-confirm-estimate-btn')?.classList.toggle('hidden', !j.isEstimate);
+  // v2.6: 子任務 + 計時器
+  modalSubtasks = JSON.parse(JSON.stringify(j.subtasks || []));
+  renderJobSubtasks();
+  loadJobTimer(j.timeSpentMs || 0);
   refreshTagSuggestions();
   onJobClientChange();
   updateJobHourlyHint();
@@ -2983,8 +3220,9 @@ function onJobPaidChange() {
 }
 
 function closeJobModal() {
+  stopJobTimerOnClose();  // v2.6: 停止計時器
   document.getElementById('job-modal').classList.remove('open');
-  document.getElementById('job-date').value = '';  // 清空避免殘留快速新增的日期
+  document.getElementById('job-date').value = '';
   releaseEditLock();
 }
 
@@ -2994,6 +3232,9 @@ function saveJob() {
   const isCancelled = document.getElementById('job-cancelled').checked;
   const endDate = document.getElementById('job-end-date').value;
   const hoursVal = document.getElementById('job-hours').value;
+  const isEstimate = document.getElementById('job-estimate').checked;
+  // 計時器：把當前累計時間存下來
+  const timeSpentMs = getCurrentTimerMs();
   const payload = {
     clientId: document.getElementById('job-client').value,
     date: document.getElementById('job-date').value,
@@ -3005,7 +3246,10 @@ function saveJob() {
     hoursWorked: hoursVal ? +hoursVal : null,  // 選填工時
     done: isDone,    // 解耦：完成獨立判斷
     paid: isPaid,    // 解耦：收款獨立判斷
-    cancelled: isCancelled
+    cancelled: isCancelled,
+    isEstimate: isEstimate,         // v2.6: 估價單模式
+    subtasks: [...modalSubtasks],   // v2.6: 子任務
+    timeSpentMs: timeSpentMs        // v2.6: 累計工時毫秒
   };
   if (!payload.title) { toast('請輸入案件名稱'); return; }
   // 新版：手動輸入的 doneAt / paidAt 優先採用
