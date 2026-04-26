@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.9.3">
+<meta name="app-version" content="2026-04-27-v2.9.4">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -975,6 +975,38 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- v2.9.4: 批次設定折扣 Modal -->
+<div class="modal-bg" id="bulk-discount-modal">
+  <div class="modal" style="max-width: 460px;">
+    <h2>🏷️ 批次設定折扣</h2>
+    <div id="bulk-discount-info" style="font-size: 13px; color: var(--muted); margin-bottom: 12px;"></div>
+    <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px;">
+      <label class="checkbox-row" style="margin: 0;">
+        <input type="radio" name="bulk-discount-type" value="none" checked>
+        <span>無（清除折扣）</span>
+      </label>
+      <label class="checkbox-row" style="margin: 0;">
+        <input type="radio" name="bulk-discount-type" value="fixed">
+        <span>金額（NT$）</span>
+      </label>
+      <label class="checkbox-row" style="margin: 0;">
+        <input type="radio" name="bulk-discount-type" value="percent">
+        <span>百分比（%）</span>
+      </label>
+    </div>
+    <input type="number" id="bulk-discount-value" placeholder="折扣值（正數）" min="0">
+    <p style="font-size: 11px; color: var(--muted); margin-top: 6px;">
+      • 金額：每筆案件原價扣減此金額（不會變負）<br>
+      • 百分比：每筆扣減 N%（例：5 = 95 折）<br>
+      • 無：清除已選案件的折扣
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('bulk-discount-modal').classList.remove('open')">取消</button>
+      <button class="btn btn-primary" onclick="confirmBulkDiscount()">套用</button>
+    </div>
+  </div>
+</div>
 
 <!-- 收款日期 Modal -->
 <div class="modal-bg" id="paid-date-modal">

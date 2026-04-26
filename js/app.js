@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.3';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.4';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -539,6 +539,46 @@ function dashBulkMarkPaid() {
   paidDateContext._fromDashBulk = true;
 }
 
+// v2.9.4: 批次設定折扣
+function openBulkDiscountModal() {
+  if (!dashBulkSelected.size) return;
+  const ids = Array.from(dashBulkSelected);
+  const total = state.jobs.filter(j => ids.includes(j.id)).reduce((s,j) => s + (+j.amount || 0), 0);
+  document.getElementById('bulk-discount-info').textContent = `將套用到 ${ids.length} 筆案件（原價合計 ${fmt(total)}）`;
+  document.getElementById('bulk-discount-value').value = '';
+  document.querySelectorAll('input[name="bulk-discount-type"]').forEach(r => r.checked = (r.value === 'none'));
+  document.getElementById('bulk-discount-modal').classList.add('open');
+}
+
+function confirmBulkDiscount() {
+  const type = document.querySelector('input[name="bulk-discount-type"]:checked')?.value || 'none';
+  const value = +document.getElementById('bulk-discount-value').value || 0;
+  if (type !== 'none' && value <= 0) {
+    toast('請輸入折扣值');
+    return;
+  }
+  if (type === 'percent' && value > 100) {
+    toast('百分比不能超過 100');
+    return;
+  }
+  const ids = Array.from(dashBulkSelected);
+  let count = 0;
+  ids.forEach(id => {
+    const j = state.jobs.find(x => x.id === id);
+    if (!j || j.cancelled) return;
+    j.discountType = type;
+    j.discountValue = type === 'none' ? 0 : value;
+    // 折扣變動後，已收款狀態可能改變（應收金額變了）
+    recomputePaidStatus(j);
+    count++;
+  });
+  save();
+  document.getElementById('bulk-discount-modal').classList.remove('open');
+  toast(`✓ 已套用折扣到 ${count} 筆`);
+  dashBulkExit();
+  render();
+}
+
 function dashBulkMarkCancelled() {
   if (!dashBulkSelected.size) return;
   if (!confirm(`確定要把 ${dashBulkSelected.size} 筆案件標記為已取消？\n\n（取消的案件不計入收益統計，但保留紀錄）`)) return;
@@ -1016,7 +1056,8 @@ function renderDashboard() {
         <button class="btn btn-ghost btn-sm" onclick="dashBulkSelectAll()">全選</button>
         <button class="btn btn-ghost btn-sm" onclick="dashBulkClear()">清除</button>
         <button class="btn btn-success btn-sm" onclick="dashBulkMarkDone()" ${!count?'disabled':''}>✓ 標完成</button>
-        <button class="btn btn-primary btn-sm" onclick="dashBulkMarkPaid()" ${!count?'disabled':''}>$ 標收款</button>
+        <button class="btn btn-primary btn-sm" onclick="dashBulkMarkPaid()" ${!count?'disabled':''}>$ 標收款（選日期）</button>
+        <button class="btn btn-outline btn-sm" onclick="openBulkDiscountModal()" ${!count?'disabled':''}>🏷️ 設折扣</button>
         <button class="btn btn-outline btn-sm" onclick="dashBulkMarkCancelled()" ${!count?'disabled':''}>🚫 取消</button>
         <button class="btn btn-outline btn-sm" onclick="toggleDashBulkMode()">✕ 退出</button>
       </div>`;

@@ -314,22 +314,33 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 }
 .row.bulk-mode { padding-left: 0; cursor: default; }
 .row.bulk-mode .check-group { display: none; }
-.row.bulk-checkbox {
-  width: 22px; height: 22px;
+/* v2.9.4: 修正選擇器 — 之前寫成 .row.bulk-checkbox 不存在，導致 checkbox 沒樣式 */
+.bulk-checkbox {
+  width: 24px; height: 24px;
   border: 2px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   flex-shrink: 0;
   cursor: pointer;
   background: var(--card);
   display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  transition: all 0.12s;
 }
-.row.selected { background: var(--primary-light); }
-.row.selected > .row.bulk-checkbox,
-.row .bulk-checkbox.checked {
+.row.selected {
+  background: var(--primary-light);
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+.row.selected .bulk-checkbox,
+.bulk-checkbox.checked {
   background: var(--primary);
   border-color: var(--primary);
+  color: #fff;
 }
-.bulk-checkbox.checked::after { content: "✓"; color: #fff; font-weight: 700; }
+.bulk-checkbox.checked::after { content: "✓"; }
+.bulk-checkbox:hover { border-color: var(--primary); }
 
 /* 備份歷史 row */
 .snapshot-row {
