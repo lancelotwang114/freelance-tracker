@@ -5,7 +5,54 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.4';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.5';   // 與 index.html 的 meta 同步
+
+// ============== 操作日誌（v2.9.5）==============
+const ACTION_LOG_KEY = 'ftActionLog_v1';
+const ACTION_LOG_MAX = 500;
+let actionLog = [];
+
+function loadActionLog() {
+  try { actionLog = JSON.parse(localStorage.getItem(ACTION_LOG_KEY) || '[]'); }
+  catch (_) { actionLog = []; }
+}
+
+function saveActionLog() {
+  if (actionLog.length > ACTION_LOG_MAX) actionLog = actionLog.slice(-ACTION_LOG_MAX);
+  try { localStorage.setItem(ACTION_LOG_KEY, JSON.stringify(actionLog)); } catch (_) {}
+}
+
+function logAction(type, details) {
+  actionLog.push({
+    ts: Date.now(),
+    type: type,
+    details: details || {}
+  });
+  saveActionLog();
+}
+
+const ACTION_LABELS = {
+  'job-create':       { icon: '🆕',   label: '新增案件' },
+  'job-edit':         { icon: '✏️',   label: '編輯案件' },
+  'job-delete':       { icon: '🗑️',   label: '刪除案件' },
+  'job-done':         { icon: '✓',    label: '標完成' },
+  'job-undo-done':    { icon: '↩',    label: '取消完成' },
+  'job-paid':         { icon: '💰',   label: '標收款' },
+  'job-undo-paid':    { icon: '↩',    label: '取消收款' },
+  'client-create':    { icon: '🆕',   label: '新增業主' },
+  'client-edit':      { icon: '✏️',   label: '編輯業主' },
+  'client-delete':    { icon: '🗑️',   label: '刪除業主' },
+  'bulk-done':        { icon: '✓',    label: '批次標完成' },
+  'bulk-paid':        { icon: '💰',   label: '批次標收款' },
+  'bulk-cancel':      { icon: '🚫',   label: '批次取消' },
+  'bulk-discount':    { icon: '🏷️',   label: '批次設折扣' },
+  'data-import':      { icon: '📥',   label: '匯入資料' },
+  'data-clear':       { icon: '⚠️',   label: '清空資料' },
+  'data-load-demo':   { icon: '🎲',   label: '載入範例' },
+  'snapshot-restore': { icon: '↩',    label: '還原 snapshot' },
+  'sync-pull':        { icon: '⬇️',   label: '從雲端拉取' },
+  'sync-push':        { icon: '⬆️',   label: '推送到雲端' }
+};
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -511,6 +558,7 @@ function dashBulkMarkDone() {
   if (!dashBulkSelected.size) return;
   const ids = Array.from(dashBulkSelected);
   let count = 0;
+  let totalAmt = 0;
   ids.forEach(id => {
     const j = state.jobs.find(x => x.id === id);
     if (!j || j.cancelled) return;
@@ -518,9 +566,11 @@ function dashBulkMarkDone() {
       j.done = true;
       j.doneAt = j.doneAt || todayStr();
       count++;
+      totalAmt += jobFinalAmount(j);
     }
   });
   save();
+  if (count > 0) logAction('bulk-done', { count, amount: totalAmt });
   toast(`✓ 已標記 ${count} 筆完成`);
   dashBulkExit();
   render();
@@ -573,6 +623,7 @@ function confirmBulkDiscount() {
     count++;
   });
   save();
+  if (count > 0) logAction('bulk-discount', { count, type, value });
   document.getElementById('bulk-discount-modal').classList.remove('open');
   toast(`✓ 已套用折扣到 ${count} 筆`);
   dashBulkExit();
@@ -588,6 +639,7 @@ function dashBulkMarkCancelled() {
     if (j) j.cancelled = true;
   });
   save();
+  logAction('bulk-cancel', { count: ids.length });
   toast(`✓ 已取消 ${ids.length} 筆`);
   dashBulkExit();
   render();
@@ -3768,7 +3820,9 @@ function toggleDone(id) {
   j.doneAt = j.done ? todayStr() : null;
   if (!j.done) { j.paid = false; j.paidAt = null; }
   save();
-  // 局部更新單一 row + 輕量元素，跳過昂貴的圖表重畫
+  // v2.9.5: 寫日誌
+  const c = getClient(j.clientId);
+  logAction(j.done ? 'job-done' : 'job-undo-done', { jobId: id, title: j.title, amount: j.amount, clientId: j.clientId, clientName: c?.name });
   updateJobRow(id);
   renderAlerts(); renderBadge();
   toast(j.done?'✓ 已標記完成':'已改為進行中');
@@ -3790,6 +3844,8 @@ function togglePaid(id) {
     j.writeOff = 0;
     recomputePaidStatus(j);
     save();
+    const c = getClient(j.clientId);
+    logAction('job-undo-paid', { jobId: id, title: j.title, amount: j.amount, clientId: j.clientId, clientName: c?.name });
     updateJobRow(id);
     renderAlerts(); renderBadge();
     toast('已改為待收款');
@@ -3843,6 +3899,18 @@ function confirmPaidDate() {
     recomputePaidStatus(j);
     n++;
   });
+  // v2.9.5: 寫日誌
+  if (ids.length === 1) {
+    const j = state.jobs.find(x => x.id === ids[0]);
+    const c = getClient(j?.clientId);
+    logAction('job-paid', { jobId: ids[0], title: j?.title, amount: j?.amount, clientId: j?.clientId, clientName: c?.name, date: dateStr });
+  } else if (n > 0) {
+    const total = ids.reduce((s, id) => {
+      const j = state.jobs.find(x => x.id === id);
+      return s + (j ? jobFinalAmount(j) : 0);
+    }, 0);
+    logAction('bulk-paid', { count: n, amount: total, date: dateStr });
+  }
   if (ids.length > 1) bulkSelected.clear();
   if (paidDateContext._fromDashBulk) {
     dashBulkExit();
@@ -4208,6 +4276,7 @@ function saveJob() {
   };
   if (!payload.title) { toast('請輸入案件名稱'); return; }
 
+  const c = getClient(payload.clientId);
   if (editingJobId) {
     const j = state.jobs.find(x => x.id === editingJobId);
     // 完成日邏輯（保留原樣）
@@ -4216,13 +4285,14 @@ function saveJob() {
     else if (!payload.done) payload.doneAt = null;
     else payload.doneAt = j.doneAt;
     Object.assign(j, payload);
-    // 依 payments 自動推算 paid / paidAt
     recomputePaidStatus(j);
+    logAction('job-edit', { jobId: editingJobId, title: payload.title, amount: payload.amount, clientId: payload.clientId, clientName: c?.name });
   } else {
     payload.doneAt = payload.done ? (manualDoneAt || todayStr()) : null;
     const newJob = { id: uid(), ...payload };
     recomputePaidStatus(newJob);
     state.jobs.push(newJob);
+    logAction('job-create', { jobId: newJob.id, title: payload.title, amount: payload.amount, clientId: payload.clientId, clientName: c?.name });
   }
   save(); closeJobModal(); render(); toast('已儲存');
 }
@@ -4230,7 +4300,10 @@ function saveJob() {
 function deleteJob() {
   if (!editingJobId) return;
   if (!confirm('確定要刪除這筆案件？')) return;
+  const j = state.jobs.find(x => x.id === editingJobId);
+  const c = j ? getClient(j.clientId) : null;
   state.jobs = state.jobs.filter(j => j.id !== editingJobId);
+  if (j) logAction('job-delete', { jobId: editingJobId, title: j.title, amount: j.amount, clientId: j.clientId, clientName: c?.name });
   save(); closeJobModal(); render(); toast('已刪除');
 }
 
@@ -4416,8 +4489,11 @@ function saveClient() {
   if (editingClientId) {
     const c = getClient(editingClientId);
     Object.assign(c, payload);
+    logAction('client-edit', { clientId: editingClientId, name: payload.name });
   } else {
-    state.clients.push({ id: uid(), ...payload });
+    const newId = uid();
+    state.clients.push({ id: newId, ...payload });
+    logAction('client-create', { clientId: newId, name: payload.name });
   }
   save(); closeClientModal(); render(); toast('已儲存');
 }
@@ -4429,6 +4505,7 @@ function deleteClient() {
   if (!confirm(`確定要刪除業主「${c.name}」？這將同時刪除 ${cnt} 筆案件。`)) return;
   state.jobs = state.jobs.filter(j => j.clientId !== editingClientId);
   state.clients = state.clients.filter(x => x.id !== editingClientId);
+  logAction('client-delete', { clientId: editingClientId, name: c.name, deletedJobs: cnt });
   save(); closeClientModal(); render(); toast('已刪除');
 }
 
@@ -4746,6 +4823,7 @@ function loadDemo() {
     // 未來案件
     { id: uid(), clientId: c3, date: addDays(new Date(), 10), title: 'Logo 優化', details: '主視覺調整', amount: 5000, done: false, paid: false, doneAt: null, paidAt: null },
   ];
+  logAction('data-load-demo', { clients: state.clients.length, jobs: state.jobs.length });
   save(); renderAll(); toast('✓ 已載入範例');
 }
 
@@ -4762,7 +4840,10 @@ function clearAll() {
     toast('已取消（輸入文字不符）');
     return;
   }
+  const beforeC = state.clients.length;
+  const beforeJ = state.jobs.length;
   state.clients = []; state.jobs = [];
+  logAction('data-clear', { clearedClients: beforeC, clearedJobs: beforeJ });
   save(); renderAll(); toast('已清空全部資料');
 }
 
@@ -4989,7 +5070,9 @@ async function pullFromSheet(silent = false) {
     }
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
-    renderAll();  // 雲端整批覆蓋 → 全部重畫
+    // v2.9.5: 記錄手動拉取（silent=true 為自動 polling，不寫日誌避免洗版）
+    if (!silent) logAction('sync-pull', { summary: `${state.clients.length} 業主、${state.jobs.length} 案件` });
+    renderAll();
     if (!silent) toast(`✓ 已下載 ${state.clients.length} 業主、${state.jobs.length} 案件`, 3500);
     return true;
   } catch (err) {
@@ -5080,6 +5163,8 @@ async function pushToSheet(silent = false, force = false) {
     config.sheetPendingPush = false;
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
+    // v2.9.5: 記錄手動推送（silent 為 schedulePush 自動觸發，不寫日誌）
+    if (!silent) logAction('sync-push', { summary: `${state.clients.length} 業主、${state.jobs.length} 案件` });
     if (!silent) toast(`✓ 已上傳 ${state.clients.length} 業主、${state.jobs.length} 案件到雲端`, 3500);
     return true;
   } catch (err) {
@@ -5851,6 +5936,247 @@ async function showSnapshotList() {
 }
 
 // 預覽特定 snapshot 內容
+// ============== 操作日誌 UI（v2.9.5）==============
+function openActionLogModal() {
+  // 填類型 select
+  const typeSel = document.getElementById('log-filter-type');
+  if (typeSel) {
+    const usedTypes = [...new Set(actionLog.map(l => l.type))].sort();
+    typeSel.innerHTML = '<option value="all">全部類型</option>' +
+      usedTypes.map(t => `<option value="${t}">${(ACTION_LABELS[t]?.icon || '')} ${ACTION_LABELS[t]?.label || t}</option>`).join('');
+  }
+  // 填業主 select（只列 log 中出現過的）
+  const clientSel = document.getElementById('log-filter-client');
+  if (clientSel) {
+    const usedClientIds = new Set();
+    actionLog.forEach(l => { if (l.details?.clientId) usedClientIds.add(l.details.clientId); });
+    const opts = ['<option value="all">全部業主</option>'];
+    state.clients.forEach(c => {
+      if (usedClientIds.has(c.id)) opts.push(`<option value="${c.id}">${escapeHtml(c.name)}</option>`);
+    });
+    clientSel.innerHTML = opts.join('');
+  }
+  document.getElementById('action-log-count').textContent = actionLog.length;
+  renderActionLog();
+  document.getElementById('action-log-modal').classList.add('open');
+}
+
+function clearActionLog() {
+  if (!confirm('確定清空所有操作日誌？（無法復原，但不影響業主/案件資料）')) return;
+  actionLog = [];
+  saveActionLog();
+  renderActionLog();
+  toast('已清空操作日誌');
+}
+
+function fmtLogTime(ts) {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+function fmtLogDateLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const that = new Date(d); that.setHours(0,0,0,0);
+  const diffDays = Math.round((today - that) / 86400000);
+  if (diffDays === 0) return '📅 今天';
+  if (diffDays === 1) return '📅 昨天';
+  return `📅 ${d.getMonth()+1}/${d.getDate()}`;
+}
+
+function renderActionLog() {
+  const box = document.getElementById('action-log-list');
+  if (!box) return;
+  const ft = document.getElementById('log-filter-type')?.value || 'all';
+  const fc = document.getElementById('log-filter-client')?.value || 'all';
+  const fd = document.getElementById('log-filter-date')?.value || 'all';
+
+  const now = Date.now();
+  let cutoff = 0;
+  if (fd === 'today') {
+    const t = new Date(); t.setHours(0,0,0,0);
+    cutoff = t.getTime();
+  } else if (fd === 'yesterday') {
+    const t = new Date(); t.setDate(t.getDate() - 1); t.setHours(0,0,0,0);
+    const e = new Date(t); e.setHours(23,59,59,999);
+    cutoff = t.getTime();
+    // 篩選時也要排除今天的（特殊處理在 filter）
+  } else if (fd === 'week') {
+    cutoff = now - 7 * 86400000;
+  } else if (fd === 'month') {
+    cutoff = now - 30 * 86400000;
+  }
+
+  let list = [...actionLog].reverse();  // 最新在前
+  if (ft !== 'all') list = list.filter(l => l.type === ft);
+  if (fc !== 'all') list = list.filter(l => l.details?.clientId === fc);
+  if (fd === 'today') list = list.filter(l => l.ts >= cutoff);
+  else if (fd === 'yesterday') {
+    const yStart = new Date(); yStart.setDate(yStart.getDate() - 1); yStart.setHours(0,0,0,0);
+    const yEnd = new Date(yStart); yEnd.setHours(23,59,59,999);
+    list = list.filter(l => l.ts >= yStart.getTime() && l.ts <= yEnd.getTime());
+  }
+  else if (fd === 'week' || fd === 'month') list = list.filter(l => l.ts >= cutoff);
+
+  if (!list.length) {
+    box.innerHTML = '<div style="text-align: center; padding: 30px; color: var(--muted); font-size: 13px;">沒有符合條件的操作紀錄</div>';
+    return;
+  }
+
+  // 依日期分組
+  const groups = {};
+  list.forEach(l => {
+    const key = fmtLogDateLabel(l.ts);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(l);
+  });
+
+  box.innerHTML = Object.entries(groups).map(([dateLabel, items]) => {
+    const rows = items.map(l => {
+      const meta = ACTION_LABELS[l.type] || { icon: '·', label: l.type };
+      const d = l.details || {};
+      let primary = '';
+      let secondary = '';
+      let onClick = '';
+      // 文字內容
+      if (l.type.startsWith('job-')) {
+        primary = `「${escapeHtml(d.title || '(無標題)')}」`;
+        if (d.amount != null) primary += ` ${fmt(d.amount)}`;
+        secondary = d.clientName ? `(${escapeHtml(d.clientName)})` : '';
+        if (d.jobId && state.jobs.find(j => j.id === d.jobId)) onClick = `editJob('${d.jobId}'); document.getElementById('action-log-modal').classList.remove('open');`;
+      } else if (l.type.startsWith('client-')) {
+        primary = `「${escapeHtml(d.name || '?')}」`;
+        if (d.clientId && state.clients.find(c => c.id === d.clientId)) onClick = `editClient('${d.clientId}'); document.getElementById('action-log-modal').classList.remove('open');`;
+      } else if (l.type.startsWith('bulk-')) {
+        primary = `${d.count || 0} 筆`;
+        if (d.amount != null) primary += ` (${fmt(d.amount)})`;
+      } else if (l.type === 'sync-pull' || l.type === 'sync-push') {
+        primary = d.summary ? escapeHtml(d.summary) : '';
+      } else if (l.type === 'snapshot-restore') {
+        primary = d.snapshotId ? `ID ${d.snapshotId}` : '';
+      } else if (l.type === 'data-import') {
+        primary = d.summary || '';
+      }
+      const arrow = onClick ? `<button class="btn btn-ghost btn-sm" onclick="${onClick}" style="padding: 0 8px; color: var(--primary);">→</button>` : '';
+      return `<div style="display: flex; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--border);">
+        <span style="color: var(--muted); min-width: 42px; font-family: monospace; font-size: 12px;">${fmtLogTime(l.ts)}</span>
+        <span style="min-width: 18px; text-align: center;">${meta.icon}</span>
+        <span style="flex: 1; min-width: 0;">${escapeHtml(meta.label)} ${primary} <span style="color: var(--muted); font-size: 12px;">${secondary}</span></span>
+        ${arrow}
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom: 10px;">
+      <div style="font-size: 12px; color: var(--muted); padding: 4px 0; border-bottom: 1px solid var(--border); font-weight: 600;">${dateLabel} (${items.length})</div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
+// ============== Snapshot Diff（v2.9.5）==============
+const SNAPSHOT_FIELD_LABELS = {
+  // 業主
+  name: '名稱', color: '顏色', note: '備註',
+  commissionRate: '抽成%', commissionTo: '介紹人',
+  prepaidMode: '儲值制', prepayments: '儲值紀錄',
+  billingDay: '請款日', billingRemindDays: '請款日提前提醒',
+  unpaidRemindDaysOverride: '未收款提醒天數',
+  // 案件
+  title: '標題', clientId: '業主', date: '日期', endDate: '截止日',
+  details: '說明', amount: '金額', tag: '類型',
+  done: '完成', doneAt: '完成日', paid: '已收款', paidAt: '收款日',
+  cancelled: '已取消', isEstimate: '估價單',
+  hoursWorked: '工時', timeSpentMs: '計時器累計',
+  discountType: '折扣類型', discountValue: '折扣值',
+  payments: '收款紀錄', writeOff: '呆帳',
+  subtasks: '子任務'
+};
+
+const CLIENT_FIELDS = ['name','color','note','commissionRate','commissionTo','prepaidMode','prepayments','billingDay','billingRemindDays','unpaidRemindDaysOverride'];
+const JOB_FIELDS    = ['title','clientId','date','endDate','details','amount','tag','done','doneAt','paid','paidAt','cancelled','isEstimate','hoursWorked','timeSpentMs','discountType','discountValue','payments','writeOff','subtasks'];
+
+function diffFields_(a, b, fields) {
+  const diff = {};
+  fields.forEach(f => {
+    const av = a?.[f];
+    const bv = b?.[f];
+    const isObj = (typeof av === 'object' && av !== null) || (typeof bv === 'object' && bv !== null);
+    if (isObj) {
+      if (JSON.stringify(av) !== JSON.stringify(bv)) diff[f] = { before: av, after: bv };
+    } else if (av !== bv) {
+      // 把 undefined 跟空字串等價處理，避免雜訊
+      if ((av === undefined || av === null || av === '') && (bv === undefined || bv === null || bv === '')) return;
+      diff[f] = { before: av, after: bv };
+    }
+  });
+  return diff;
+}
+
+function computeSnapshotDiff(currentClients, currentJobs, snapClients, snapJobs) {
+  const result = {
+    clients: { added: [], removed: [], changed: [] },
+    jobs:    { added: [], removed: [], changed: [] }
+  };
+  const curC = new Map((currentClients || []).map(c => [c.id, c]));
+  const snapC = new Map((snapClients || []).map(c => [c.id, c]));
+  const curJ = new Map((currentJobs || []).map(j => [j.id, j]));
+  const snapJ = new Map((snapJobs || []).map(j => [j.id, j]));
+
+  (snapClients || []).forEach(c => {
+    if (!curC.has(c.id)) result.clients.added.push(c);
+    else {
+      const fd = diffFields_(curC.get(c.id), c, CLIENT_FIELDS);
+      if (Object.keys(fd).length) result.clients.changed.push({ id: c.id, before: curC.get(c.id), after: c, fieldDiff: fd });
+    }
+  });
+  (currentClients || []).forEach(c => { if (!snapC.has(c.id)) result.clients.removed.push(c); });
+
+  (snapJobs || []).forEach(j => {
+    if (!curJ.has(j.id)) result.jobs.added.push(j);
+    else {
+      const fd = diffFields_(curJ.get(j.id), j, JOB_FIELDS);
+      if (Object.keys(fd).length) result.jobs.changed.push({ id: j.id, before: curJ.get(j.id), after: j, fieldDiff: fd });
+    }
+  });
+  (currentJobs || []).forEach(j => { if (!snapJ.has(j.id)) result.jobs.removed.push(j); });
+
+  return result;
+}
+
+function formatDiffValue_(field, value, snapClients) {
+  if (value === undefined || value === null || value === '') return '<i style="color:var(--muted);">(空)</i>';
+  if (Array.isArray(value)) {
+    if (field === 'payments' || field === 'prepayments') {
+      const total = value.reduce((s, p) => s + (+p.amount || 0), 0);
+      return `${value.length} 筆 (${fmt(total)})`;
+    }
+    if (field === 'subtasks') {
+      const done = value.filter(s => s.done).length;
+      return `${value.length} 項 (${done} 完成)`;
+    }
+    return JSON.stringify(value).slice(0, 60);
+  }
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (field === 'clientId') {
+    const c = (snapClients || state.clients).find(x => x.id === value);
+    return c ? escapeHtml(c.name) : `<i style="color:var(--muted);">(未知)</i>`;
+  }
+  if (field === 'discountType') return ({ none: '無', fixed: '折扣金額', percent: '折扣百分比' })[value] || value;
+  return escapeHtml(String(value));
+}
+
+function renderFieldDiffHtml(fieldDiff, snapClients) {
+  return Object.keys(fieldDiff).map(f => {
+    const label = SNAPSHOT_FIELD_LABELS[f] || f;
+    const before = formatDiffValue_(f, fieldDiff[f].before, snapClients);
+    const after = formatDiffValue_(f, fieldDiff[f].after, snapClients);
+    return `<div style="font-size: 12px; padding: 2px 0;">
+      <span style="color: var(--muted);">${label}</span>:
+      <span style="color: var(--danger); text-decoration: line-through;">${before}</span>
+      →
+      <span style="color: var(--success);">${after}</span>
+    </div>`;
+  }).join('');
+}
+
 async function previewSnapshot(id) {
   const cfg = config.sheetConfig;
   toastProgress('📂 載入預覽...');
@@ -5871,39 +6197,123 @@ async function previewSnapshot(id) {
     }
     const snap = data.snapshot;
     const d = snap.data;
-    const clients = d.clients || [];
-    const jobs = d.jobs || [];
+    const snapClients = d.clients || [];
+    const snapJobs = d.jobs || [];
 
-    // 統計：負金額案件
-    const negativeJobs = jobs.filter(j => +j.amount < 0);
-    const negativeInfo = negativeJobs.length
-      ? '\n\n⚠️ 含負金額案件 (' + negativeJobs.length + ' 筆)：\n' +
-        negativeJobs.slice(0, 5).map(j => {
-          const c = clients.find(c => c.id === j.clientId);
-          return `  • ${c?.name || '?'} | ${j.title} | ${fmt(+j.amount)}`;
-        }).join('\n')
-      : '';
-
-    // 業主清單
-    const clientList = clients.slice(0, 8).map(c => `  • ${c.name}`).join('\n');
-    const moreClients = clients.length > 8 ? `\n  ...還有 ${clients.length - 8} 位` : '';
-
-    // 案件總金額
-    const total = jobs.reduce((s,j) => s + (+j.amount || 0), 0);
-
-    alert(
-      `備份內容預覽（${snap.timestamp}）\n` +
-      '─────────────────────────────\n' +
-      `業主：${clients.length} 位\n${clientList}${moreClients}\n\n` +
-      `案件：${jobs.length} 筆\n` +
-      `總金額：${fmt(total)}` +
-      negativeInfo +
-      '\n\n要還原這個版本？請按關閉預覽 → 點該筆的「⏮️ 還原」按鈕'
-    );
+    // v2.9.5: 計算 diff
+    const diff = computeSnapshotDiff(state.clients, state.jobs, snapClients, snapJobs);
+    showSnapshotDiffModal(snap, snapClients, snapJobs, diff, id);
     toast('');
   } catch (err) {
     alert('錯誤：' + err.message);
   }
+}
+
+// v2.9.5: Snapshot diff 預覽 modal
+const DIFF_PREVIEW_LIMIT = 10;
+
+function showSnapshotDiffModal(snap, snapClients, snapJobs, diff, snapshotId) {
+  const curTotalAmt = state.jobs.reduce((s,j) => s + (+j.amount || 0), 0);
+  const snapTotalAmt = snapJobs.reduce((s,j) => s + (+j.amount || 0), 0);
+  const totalDelta = snapTotalAmt - curTotalAmt;
+  const deltaSign = totalDelta > 0 ? '+' : (totalDelta < 0 ? '−' : '');
+
+  const tierLabels = { force: '🔒 每日強制', manual: '✋ 手動', restore: '↩️ 還原前', auto: '⚙️ 自動', legacy: '📦 舊版' };
+  const tierLabel = tierLabels[snap.tier] || snap.tier || '';
+
+  const clientName = (id, sourceClients) => {
+    const c = (sourceClients || state.clients).find(x => x.id === id);
+    return c ? escapeHtml(c.name) : `<i style="color:var(--muted);">(未知)</i>`;
+  };
+
+  const renderJobRow = (j, sourceClients) => {
+    return `<li style="padding: 3px 0;">${j.date || '-'} ${escapeHtml(j.title || '(無標題)')} ${fmt(+j.amount||0)} <span style="color:var(--muted);">${clientName(j.clientId, sourceClients)}</span></li>`;
+  };
+
+  const addedClientsHtml = diff.clients.added.length
+    ? `<ul style="margin: 4px 0 0 12px; font-size: 12px;">${diff.clients.added.slice(0, DIFF_PREVIEW_LIMIT).map(c => `<li>${escapeHtml(c.name)}</li>`).join('')}${diff.clients.added.length > DIFF_PREVIEW_LIMIT ? `<li style="color:var(--muted);">…還有 ${diff.clients.added.length - DIFF_PREVIEW_LIMIT} 位</li>` : ''}</ul>`
+    : '';
+  const addedJobsHtml = diff.jobs.added.length
+    ? `<ul style="margin: 4px 0 0 12px; font-size: 12px;">${diff.jobs.added.slice(0, DIFF_PREVIEW_LIMIT).map(j => renderJobRow(j, snapClients)).join('')}${diff.jobs.added.length > DIFF_PREVIEW_LIMIT ? `<li style="color:var(--muted);">…還有 ${diff.jobs.added.length - DIFF_PREVIEW_LIMIT} 筆</li>` : ''}</ul>`
+    : '';
+
+  const removedClientsHtml = diff.clients.removed.length
+    ? `<ul style="margin: 4px 0 0 12px; font-size: 12px;">${diff.clients.removed.slice(0, DIFF_PREVIEW_LIMIT).map(c => `<li>${escapeHtml(c.name)}</li>`).join('')}${diff.clients.removed.length > DIFF_PREVIEW_LIMIT ? `<li style="color:var(--muted);">…還有 ${diff.clients.removed.length - DIFF_PREVIEW_LIMIT} 位</li>` : ''}</ul>`
+    : '';
+  const removedJobsHtml = diff.jobs.removed.length
+    ? `<ul style="margin: 4px 0 0 12px; font-size: 12px;">${diff.jobs.removed.slice(0, DIFF_PREVIEW_LIMIT).map(j => renderJobRow(j, state.clients)).join('')}${diff.jobs.removed.length > DIFF_PREVIEW_LIMIT ? `<li style="color:var(--muted);">…還有 ${diff.jobs.removed.length - DIFF_PREVIEW_LIMIT} 筆</li>` : ''}</ul>`
+    : '';
+
+  const changedClientsHtml = diff.clients.changed.length
+    ? diff.clients.changed.slice(0, DIFF_PREVIEW_LIMIT).map(c => `
+        <div style="margin-top: 8px; padding: 6px; background: var(--bg); border-radius: 6px;">
+          <div style="font-weight: 600; font-size: 13px;">${escapeHtml(c.before.name || c.after.name)}</div>
+          ${renderFieldDiffHtml(c.fieldDiff, snapClients)}
+        </div>`).join('') + (diff.clients.changed.length > DIFF_PREVIEW_LIMIT ? `<div style="color:var(--muted); font-size: 12px; margin-top: 4px;">…還有 ${diff.clients.changed.length - DIFF_PREVIEW_LIMIT} 位</div>` : '')
+    : '';
+  const changedJobsHtml = diff.jobs.changed.length
+    ? diff.jobs.changed.slice(0, DIFF_PREVIEW_LIMIT).map(j => `
+        <div style="margin-top: 8px; padding: 6px; background: var(--bg); border-radius: 6px;">
+          <div style="font-weight: 600; font-size: 13px;">${j.after.date || j.before.date || '-'} ${escapeHtml(j.after.title || j.before.title || '')} <span style="font-weight: 400; color: var(--muted);">${clientName(j.after.clientId || j.before.clientId, snapClients)}</span></div>
+          ${renderFieldDiffHtml(j.fieldDiff, snapClients)}
+        </div>`).join('') + (diff.jobs.changed.length > DIFF_PREVIEW_LIMIT ? `<div style="color:var(--muted); font-size: 12px; margin-top: 4px;">…還有 ${diff.jobs.changed.length - DIFF_PREVIEW_LIMIT} 筆</div>` : '')
+    : '';
+
+  const html = `
+    <div style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">
+      ${snap.timestamp}　${snap.dataSize ? Math.round(snap.dataSize / 1024) + ' KB' : ''}　${tierLabel}　${escapeHtml(snap.device || '')}
+    </div>
+
+    <div style="background: var(--bg); padding: 10px; border-radius: 8px; margin-bottom: 12px;">
+      <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">數字差異</div>
+      <table style="width: 100%; font-size: 13px;">
+        <tr><td>業主</td><td style="text-align: right;">${state.clients.length}</td><td style="text-align: center; color: var(--muted);">→</td><td style="text-align: right;"><b>${snapClients.length}</b></td><td style="text-align: right; color: ${snapClients.length === state.clients.length ? 'var(--muted)' : (snapClients.length < state.clients.length ? 'var(--danger)' : 'var(--success)')};">(${snapClients.length - state.clients.length >= 0 ? '+' : ''}${snapClients.length - state.clients.length})</td></tr>
+        <tr><td>案件</td><td style="text-align: right;">${state.jobs.length}</td><td style="text-align: center; color: var(--muted);">→</td><td style="text-align: right;"><b>${snapJobs.length}</b></td><td style="text-align: right; color: ${snapJobs.length === state.jobs.length ? 'var(--muted)' : (snapJobs.length < state.jobs.length ? 'var(--danger)' : 'var(--success)')};">(${snapJobs.length - state.jobs.length >= 0 ? '+' : ''}${snapJobs.length - state.jobs.length})</td></tr>
+        <tr><td>總額</td><td style="text-align: right;">${fmt(curTotalAmt)}</td><td style="text-align: center; color: var(--muted);">→</td><td style="text-align: right;"><b>${fmt(snapTotalAmt)}</b></td><td style="text-align: right; color: ${totalDelta === 0 ? 'var(--muted)' : (totalDelta < 0 ? 'var(--danger)' : 'var(--success)')};">(${deltaSign}${fmt(Math.abs(totalDelta)).replace('NT$','').trim()})</td></tr>
+      </table>
+    </div>
+
+    <div style="margin-bottom: 8px;">
+      <details ${diff.clients.added.length + diff.jobs.added.length > 0 ? 'open' : ''} style="background: var(--success-light); padding: 8px; border-radius: 6px; margin-bottom: 6px;">
+        <summary style="cursor: pointer; font-size: 13px; font-weight: 600; color: var(--success);">
+          🟢 還原後會「復活」：${diff.clients.added.length} 業主、${diff.jobs.added.length} 案件
+        </summary>
+        ${diff.clients.added.length ? `<div style="margin-top: 6px;"><b style="font-size: 12px;">業主：</b>${addedClientsHtml}</div>` : ''}
+        ${diff.jobs.added.length ? `<div style="margin-top: 6px;"><b style="font-size: 12px;">案件：</b>${addedJobsHtml}</div>` : ''}
+        ${!diff.clients.added.length && !diff.jobs.added.length ? '<div style="font-size: 12px; color: var(--muted); margin-top: 4px;">（無）</div>' : ''}
+      </details>
+
+      <details style="background: var(--danger-light); padding: 8px; border-radius: 6px; margin-bottom: 6px;">
+        <summary style="cursor: pointer; font-size: 13px; font-weight: 600; color: var(--danger);">
+          🔴 還原後會「消失」：${diff.clients.removed.length} 業主、${diff.jobs.removed.length} 案件
+        </summary>
+        ${diff.clients.removed.length ? `<div style="margin-top: 6px;"><b style="font-size: 12px;">業主：</b>${removedClientsHtml}</div>` : ''}
+        ${diff.jobs.removed.length ? `<div style="margin-top: 6px;"><b style="font-size: 12px;">案件：</b>${removedJobsHtml}</div>` : ''}
+        ${!diff.clients.removed.length && !diff.jobs.removed.length ? '<div style="font-size: 12px; color: var(--muted); margin-top: 4px;">（無）</div>' : ''}
+      </details>
+
+      <details style="background: var(--warning-light); padding: 8px; border-radius: 6px;">
+        <summary style="cursor: pointer; font-size: 13px; font-weight: 600; color: var(--warning);">
+          🟡 還原後會「變動」：${diff.clients.changed.length} 業主、${diff.jobs.changed.length} 案件
+        </summary>
+        ${diff.clients.changed.length ? `<div style="margin-top: 6px;"><b style="font-size: 12px;">業主變動：</b>${changedClientsHtml}</div>` : ''}
+        ${diff.jobs.changed.length ? `<div style="margin-top: 6px;"><b style="font-size: 12px;">案件變動：</b>${changedJobsHtml}</div>` : ''}
+        ${!diff.clients.changed.length && !diff.jobs.changed.length ? '<div style="font-size: 12px; color: var(--muted); margin-top: 4px;">（無）</div>' : ''}
+      </details>
+    </div>
+
+    <div style="font-size: 12px; color: var(--muted); padding: 6px; background: var(--bg); border-radius: 6px; margin-bottom: 8px;">
+      ⚠️ 還原前會自動把現在的資料先備份起來（restore tier，永久保留）
+    </div>
+  `;
+
+  const box = document.getElementById('snapshot-diff-content');
+  if (box) box.innerHTML = html;
+  document.getElementById('snapshot-diff-confirm-btn').onclick = () => {
+    document.getElementById('snapshot-diff-modal').classList.remove('open');
+    restoreSnapshot(snapshotId);
+  };
+  document.getElementById('snapshot-diff-modal').classList.add('open');
 }
 
 async function restoreSnapshot(id) {
@@ -5917,6 +6327,7 @@ async function restoreSnapshot(id) {
     });
     const data = await resp.json();
     if (!data.ok) { alert('還原失敗：' + data.error); return; }
+    logAction('snapshot-restore', { snapshotId: id, restoredAt: data.result.restoredAt, clientCount: data.result.clientCount, jobCount: data.result.jobCount });
     alert(`✓ 已還原\n\n還原時間：${data.result.restoredAt}\n業主：${data.result.clientCount} 位\n案件：${data.result.jobCount} 筆\n\n即將重新拉取資料到本地。`);
     await pullFromSheet(false);
   } catch (err) {
@@ -6339,6 +6750,7 @@ function setupAutoSave() {
 
 // ============== Init ==============
 load();
+loadActionLog();   // v2.9.5
 loadReminderConfigUI();   // v2.7.9: 提醒設定（取代舊的單欄）
 loadUserInfoUI();
 loadSheetConfigUI();

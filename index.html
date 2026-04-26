@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.9.4">
+<meta name="app-version" content="2026-04-27-v2.9.5">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -47,6 +47,7 @@
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
         <button id="hard-reload-btn" onclick="hardReload()" title="強制刷新（清除所有快取、Service Worker、Cookie）" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text); white-space: nowrap;">🔄 刷新頁面</button>
+        <button id="action-log-btn" onclick="openActionLogModal()" title="操作日誌（最近 500 筆）" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--text); white-space: nowrap;">📜 日誌</button>
         <button id="theme-toggle-btn" onclick="cycleTheme()" title="切換深淺色模式" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 14px; cursor: pointer; color: var(--text);">🌗</button>
         <div id="sync-indicator" class="sync-indicator sync-idle" onclick="switchTab('settings')" title="點擊開啟設定頁">○ 未啟用</div>
       </div>
@@ -975,6 +976,42 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- v2.9.5: 操作日誌 Modal -->
+<div class="modal-bg" id="action-log-modal">
+  <div class="modal" style="max-width: 640px;">
+    <h2>📜 操作日誌</h2>
+    <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">最近 <span id="action-log-count">0</span> 筆操作（只存本機，最多 500 筆）</p>
+    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; align-items: center;">
+      <select id="log-filter-type" onchange="renderActionLog()" style="font-size: 12px; padding: 4px 6px;"></select>
+      <select id="log-filter-client" onchange="renderActionLog()" style="font-size: 12px; padding: 4px 6px;"></select>
+      <select id="log-filter-date" onchange="renderActionLog()" style="font-size: 12px; padding: 4px 6px;">
+        <option value="all">全部時間</option>
+        <option value="today">今天</option>
+        <option value="yesterday">昨天</option>
+        <option value="week">最近 7 天</option>
+        <option value="month">最近 30 天</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" onclick="clearActionLog()" style="margin-left: auto;">🗑️ 清空</button>
+    </div>
+    <div id="action-log-list" style="max-height: 60vh; overflow-y: auto; font-size: 13px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('action-log-modal').classList.remove('open')">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- v2.9.5: Snapshot Diff Modal -->
+<div class="modal-bg" id="snapshot-diff-modal">
+  <div class="modal" style="max-width: 640px;">
+    <h2>📂 還原預覽</h2>
+    <div id="snapshot-diff-content" style="max-height: 60vh; overflow-y: auto;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('snapshot-diff-modal').classList.remove('open')">取消</button>
+      <button class="btn btn-primary" id="snapshot-diff-confirm-btn">⏮️ 確認還原</button>
+    </div>
+  </div>
+</div>
 
 <!-- v2.9.4: 批次設定折扣 Modal -->
 <div class="modal-bg" id="bulk-discount-modal">
