@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.1';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -1298,14 +1298,44 @@ function renderClients() {
       tlAmounts[mm] = (tlAmounts[mm] || 0) + (+j.amount||0);
     });
     const tlMax = Math.max(...tlMonths.map(m => tlAmounts[m] || 0), 1);
-    const timelineHtml = `<div class="client-timeline" title="近 12 個月活躍度">${
-      tlMonths.map(m => {
-        const amt = tlAmounts[m] || 0;
-        const pct = amt > 0 ? Math.max(0.1, amt / tlMax) : 0;
-        const opacity = pct > 0 ? Math.max(0.25, pct).toFixed(2) : 0;
-        return `<div class="client-timeline-cell ${amt?'has-job':''}" title="${m}: ${fmt(amt)}" style="background-color: ${amt ? c.color : 'transparent'}; opacity: ${amt ? opacity : 1};"></div>`;
-      }).join('')
-    }</div>`;
+    const activeMonthCount = tlMonths.filter(m => tlAmounts[m]).length;
+    // 上次接案多久前
+    let lastJobLabel, lastJobDot;
+    if (activeMonthCount === 0) {
+      lastJobLabel = '近一年沒接案';
+      lastJobDot = '🔴';
+    } else {
+      // 找最近有接案的月份
+      const activeMonths = tlMonths.filter(m => tlAmounts[m]);
+      const lastM = activeMonths[activeMonths.length - 1];
+      const idx = tlMonths.indexOf(lastM);
+      const monthsAgo = 11 - idx;
+      if (monthsAgo === 0) { lastJobLabel = '本月有接案'; lastJobDot = '🟢'; }
+      else if (monthsAgo === 1) { lastJobLabel = '上次接案：上個月'; lastJobDot = '🟢'; }
+      else if (monthsAgo <= 3) { lastJobLabel = `上次接案：${monthsAgo} 個月前`; lastJobDot = '🟡'; }
+      else { lastJobLabel = `上次接案：${monthsAgo} 個月前`; lastJobDot = '🔴'; }
+    }
+    const timelineHtml = `
+      <div class="client-timeline-label" style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); margin: 6px 0 4px; padding-left: 24px;">
+        <span><b>📊 活躍度</b>　<span style="color: var(--text);">${lastJobDot} ${lastJobLabel}</span> · 過去 12 個月活躍 <b>${activeMonthCount}/12</b> 個月</span>
+        <span style="font-size: 10px;">每格＝1 個月，越亮金額越大</span>
+      </div>
+      <div class="client-timeline" style="padding-left: 24px;" title="近 12 個月活躍度（左=12個月前 → 右=本月）">
+        <div style="display: flex; gap: 2px; align-items: center;">
+          <span style="font-size: 9px; color: var(--muted); min-width: 28px;">12月前</span>
+          <div style="flex: 1; display: flex; gap: 2px;">${
+            tlMonths.map((m, idx) => {
+              const amt = tlAmounts[m] || 0;
+              const pct = amt > 0 ? Math.max(0.1, amt / tlMax) : 0;
+              const opacity = pct > 0 ? Math.max(0.3, pct).toFixed(2) : 1;
+              const bg = amt ? c.color : 'var(--border)';
+              const isCurrent = idx === 11;
+              return `<div class="client-timeline-cell ${amt?'has-job':''}" title="${m}: ${amt ? fmt(amt) : '無案件'}" style="flex: 1; height: 16px; background-color: ${bg}; opacity: ${opacity}; border-radius: 3px; ${isCurrent?'outline: 1px solid var(--text); outline-offset: 1px;':''}"></div>`;
+            }).join('')
+          }</div>
+          <span style="font-size: 9px; color: var(--muted); min-width: 24px; text-align: right;">本月</span>
+        </div>
+      </div>`;
 
     const isExpanded = expandedClients.has(c.id);
     const expandIcon = isExpanded ? '▼' : '▶';
