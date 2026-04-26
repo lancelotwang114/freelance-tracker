@@ -390,6 +390,18 @@
 
         <div class="section-divider"></div>
 
+        <!-- 裝置名稱（只存本機） -->
+        <div style="margin-bottom: 12px;">
+          <label style="font-size: 13px;">裝置名稱（顯示在備份歷史與同步徽章上）</label>
+          <p style="font-size: 11px; color: var(--muted); margin: 2px 0 6px;">
+            這個欄位只存在這台電腦本機（不會同步到雲端），方便辨識是哪一台 PC 上傳的。例：「工作室 Win」、「家裡 MacBook」
+          </p>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="cfg-device-name" placeholder="例：工作室 Win" style="flex: 1;">
+            <button class="btn btn-primary btn-sm" onclick="setDeviceName(document.getElementById('cfg-device-name').value)">儲存</button>
+          </div>
+        </div>
+
         <div style="background: var(--success-light); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--success); margin-top: 4px;">
           ☁️ <b>雲端優先</b> 與 <b>每 30 秒自動偵測</b> 已永久啟用，確保多裝置同步、不會被舊資料覆蓋。
         </div>

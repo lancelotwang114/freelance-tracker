@@ -2940,7 +2940,8 @@ function setSyncStatus(status, err) {
       break;
     case 'synced':
       icon = '✓'; cls = 'synced';
-      text = dtText || '已同步';
+      const byDevice = cfg.cloudLastDevice ? ` · ${cfg.cloudLastDevice}` : '';
+      text = (dtText || '已同步') + byDevice;
       break;
     case 'offline':
       icon = '⚠'; cls = 'offline';
@@ -3004,6 +3005,7 @@ async function pullFromSheet(silent = false) {
     if (data.meta) {
       config.sheetConfig.cloudVersion = +data.meta.version || 0;
       config.sheetConfig.cloudLastModifiedAt = data.meta.lastModifiedAt || data.listedAt;
+      config.sheetConfig.cloudLastDevice = data.meta.lastDevice || '';
     }
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
@@ -3083,6 +3085,7 @@ async function pushToSheet(silent = false, force = false) {
     if (data.meta) {
       config.sheetConfig.cloudVersion = +data.meta.version || 0;
       config.sheetConfig.cloudLastModifiedAt = data.meta.lastModifiedAt || data.savedAt;
+      config.sheetConfig.cloudLastDevice = data.meta.lastDevice || getDeviceLabel();
     }
     config.sheetPendingPush = false;
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
@@ -3105,12 +3108,35 @@ function schedulePush() {
   syncTimer = setTimeout(() => pushToSheet(true), 2000);
 }
 
+// 裝置標籤：優先使用使用者自訂名稱（每台 PC 自己存在 localStorage，不上雲）
+const DEVICE_NAME_KEY = 'ftDeviceName_v1';
+
 function getDeviceLabel() {
+  const custom = localStorage.getItem(DEVICE_NAME_KEY);
+  if (custom && custom.trim()) return custom.trim();
+  // 沒設過 → 用 OS 推測
   const ua = navigator.userAgent;
   if (/Mobi|Android/i.test(ua)) return 'mobile';
   if (/Mac/i.test(ua)) return 'mac';
   if (/Win/i.test(ua)) return 'windows';
   return 'unknown';
+}
+
+function setDeviceName(name) {
+  if (!name || !name.trim()) {
+    localStorage.removeItem(DEVICE_NAME_KEY);
+    toast('已清除自訂裝置名稱');
+  } else {
+    localStorage.setItem(DEVICE_NAME_KEY, name.trim());
+    toast(`✓ 裝置名稱：${name.trim()}`);
+  }
+  loadDeviceNameUI();
+  updateSheetSyncBadge();
+}
+
+function loadDeviceNameUI() {
+  const input = document.getElementById('cfg-device-name');
+  if (input) input.value = localStorage.getItem(DEVICE_NAME_KEY) || '';
 }
 
 async function enableSheetSync() {
@@ -3397,6 +3423,7 @@ function loadSheetConfigUI() {
   if (!g('sheet-api')) return;
   g('sheet-api').value = config.sheetConfig?.apiUrl || '';
   g('sheet-url').value = config.sheetConfig?.sheetUrl || '';
+  loadDeviceNameUI();
   // 雲端優先 + 自動偵測已強制永久開啟，無 UI
 }
 
