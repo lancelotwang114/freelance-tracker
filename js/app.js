@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.9';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.10';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -406,6 +406,84 @@ function renderAll() {
 // ============== 批次操作 ==============
 let bulkMode = false;
 let bulkSelected = new Set();
+
+// v2.7.10: Dashboard 近期案件專屬批次（與 jobs 分頁的 bulkMode 獨立）
+let dashBulkMode = false;
+let dashBulkSelected = new Set();
+
+function toggleDashBulkMode() {
+  dashBulkMode = !dashBulkMode;
+  dashBulkSelected.clear();
+  renderDashboard();
+}
+
+function toggleDashBulkSelect(id) {
+  if (dashBulkSelected.has(id)) dashBulkSelected.delete(id);
+  else dashBulkSelected.add(id);
+  renderDashboard();
+}
+
+function dashBulkSelectAll() {
+  const recent = [...state.jobs].sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0, 10);
+  recent.forEach(j => { if (!j.cancelled) dashBulkSelected.add(j.id); });
+  renderDashboard();
+}
+
+function dashBulkClear() {
+  dashBulkSelected.clear();
+  renderDashboard();
+}
+
+function dashBulkExit() {
+  dashBulkMode = false;
+  dashBulkSelected.clear();
+}
+
+function dashBulkMarkDone() {
+  if (!dashBulkSelected.size) return;
+  const ids = Array.from(dashBulkSelected);
+  let count = 0;
+  ids.forEach(id => {
+    const j = state.jobs.find(x => x.id === id);
+    if (!j || j.cancelled) return;
+    if (!j.done) {
+      j.done = true;
+      j.doneAt = j.doneAt || todayStr();
+      count++;
+    }
+  });
+  save();
+  toast(`✓ 已標記 ${count} 筆完成`);
+  dashBulkExit();
+  render();
+}
+
+function dashBulkMarkPaid() {
+  if (!dashBulkSelected.size) return;
+  // 用既有的收款日期 modal，並讓 confirmPaidDate 完成後清除 dashBulk 狀態
+  const ids = Array.from(dashBulkSelected).filter(id => {
+    const j = state.jobs.find(x => x.id === id);
+    return j && !j.cancelled;
+  });
+  if (!ids.length) { toast('沒有可收款的案件'); return; }
+  openPaidDateModal(ids);
+  // 旗標：modal 確認後要清除 dashBulk
+  paidDateContext._fromDashBulk = true;
+}
+
+function dashBulkMarkCancelled() {
+  if (!dashBulkSelected.size) return;
+  if (!confirm(`確定要把 ${dashBulkSelected.size} 筆案件標記為已取消？\n\n（取消的案件不計入收益統計，但保留紀錄）`)) return;
+  const ids = Array.from(dashBulkSelected);
+  ids.forEach(id => {
+    const j = state.jobs.find(x => x.id === id);
+    if (j) j.cancelled = true;
+  });
+  save();
+  toast(`✓ 已取消 ${ids.length} 筆`);
+  dashBulkExit();
+  render();
+}
 
 function toggleBulkMode() {
   bulkMode = !bulkMode;
@@ -814,11 +892,32 @@ function renderDashboard() {
   document.getElementById('stat-year').textContent = fmt(yearAmt);
   document.getElementById('stat-year-sub').textContent = year + ' 年已收款';
 
-  // 近期案件
-  const recent = [...state.jobs].sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0, 6);
-  document.getElementById('recent-jobs').innerHTML = recent.length
-    ? recent.map(jobRow).join('')
-    : emptyState('還沒有案件', '點右下角 + 新增第一筆');
+  // 近期案件（v2.7.10：擴大到 10 筆 + 支援 dashboard 批次模式）
+  const recent = [...state.jobs].sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0, 10);
+  const recentBox = document.getElementById('recent-jobs');
+  if (!recent.length) {
+    recentBox.innerHTML = emptyState('還沒有案件', '點右下角 + 新增第一筆');
+  } else {
+    let html = '';
+    if (dashBulkMode) {
+      const total = recent.filter(j => dashBulkSelected.has(j.id)).reduce((s,j) => s + (+j.amount || 0), 0);
+      const count = recent.filter(j => dashBulkSelected.has(j.id)).length;
+      html += `<div style="background: var(--primary-light); border-radius: 8px; padding: 10px; margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px;">
+        <span style="flex: 1; min-width: 120px; font-weight: 600;">已選 ${count} 筆 ${count ? `· ${fmt(total)}` : ''}</span>
+        <button class="btn btn-ghost btn-sm" onclick="dashBulkSelectAll()">全選</button>
+        <button class="btn btn-ghost btn-sm" onclick="dashBulkClear()">清除</button>
+        <button class="btn btn-success btn-sm" onclick="dashBulkMarkDone()" ${!count?'disabled':''}>✓ 標完成</button>
+        <button class="btn btn-primary btn-sm" onclick="dashBulkMarkPaid()" ${!count?'disabled':''}>$ 標收款</button>
+        <button class="btn btn-outline btn-sm" onclick="dashBulkMarkCancelled()" ${!count?'disabled':''}>🚫 取消</button>
+        <button class="btn btn-outline btn-sm" onclick="toggleDashBulkMode()">✕ 退出</button>
+      </div>`;
+    }
+    html += recent.map(j => jobRow(j, 'dash')).join('');
+    recentBox.innerHTML = html;
+  }
+  // 標題旁的批次按鈕（render 後再更新文字）
+  const dashBulkBtn = document.getElementById('dash-bulk-btn');
+  if (dashBulkBtn) dashBulkBtn.textContent = dashBulkMode ? '✕ 退出批次' : '☑️ 批次操作';
 
   // 月度圖：改成最近 6 個「日曆月份」（空月顯示為 0）
   const byMonth = {};
@@ -943,7 +1042,12 @@ function renderYearComparison() {
 }
 
 // ============== Job Row ==============
-function jobRow(j) {
+function jobRow(j, ctx) {
+  // v2.7.10: ctx === 'dash' 用 Dashboard 專屬批次狀態；undefined 用全域 jobs 分頁狀態
+  const isDash = ctx === 'dash';
+  const inBulk = isDash ? dashBulkMode : bulkMode;
+  const selectedSet = isDash ? dashBulkSelected : bulkSelected;
+  const toggleFn = isDash ? 'toggleDashBulkSelect' : 'toggleBulkSelect';
   const c = getClient(j.clientId);
   const color = c ? c.color : '#ccc';
   const name = c ? c.name : '未指定';
@@ -965,16 +1069,16 @@ function jobRow(j) {
   const subTotal = (j.subtasks || []).length;
   const subBadge = subTotal > 0 ? `<span class="tag-badge">☑️ ${subDone}/${subTotal}</span>` : '';
   const hl = highlightJobIds.has(j.id) ? ' highlight' : '';
-  const isSelected = bulkSelected.has(j.id);
+  const isSelected = selectedSet.has(j.id);
   const selCls = isSelected ? ' selected' : '';
 
   // 批次模式：顯示批次 checkbox 取代雙勾，整個 row 點擊變成 toggle 選取
-  if (bulkMode) {
-    return `<div class="row state-${status}${hl}${selCls}" data-job-id="${j.id}" onclick="toggleBulkSelect('${j.id}')">
+  if (inBulk) {
+    return `<div class="row state-${status}${hl}${selCls}" data-job-id="${j.id}" onclick="${toggleFn}('${j.id}')">
       <div class="bulk-checkbox ${isSelected?'checked':''}"></div>
       <div class="dot" style="background:${color}"></div>
       <div class="info">
-        <div class="title">${escapeHtml(j.title || '（無標題）')}${tagBadge}${dueBadge}${cancelBadge}</div>
+        <div class="title">${escapeHtml(j.title || '（無標題）')}${estimateBadge}${tagBadge}${dueBadge}${subBadge}${cancelBadge}</div>
         <div class="meta">${name} · ${j.date || '無日期'}</div>
       </div>
       <div class="amount">${fmt(+j.amount||0)}</div>
@@ -3435,6 +3539,10 @@ function confirmPaidDate() {
     }
   });
   if (ids.length > 1) bulkSelected.clear();
+  // v2.7.10: 若是從 dashboard 批次觸發 → 同時清除 dash 狀態
+  if (paidDateContext._fromDashBulk) {
+    dashBulkExit();
+  }
   closePaidDateModal();
   save(); render();
   toast(`💰 ${n} 筆已標記收款 (${dateStr})`, 3000);
