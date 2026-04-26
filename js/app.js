@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.4';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.5';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -5238,6 +5238,44 @@ async function restoreSnapshot(id) {
 // ============== 網頁版本偵測 ==============
 // APP_VERSION 已在檔案頂端宣告（v2.2 新增）；此處不再重複宣告
 const APP_VERSION_KEY = 'freelance-tracker-app-version';
+let serverAppVersion = null;  // 由 pollAppVersion 更新，給 UI 顯示用
+
+// v2.7.5: 強制清除所有快取 + 重新載入（取代 Ctrl+F5）
+async function hardReload() {
+  if (!confirm('將清除瀏覽器快取（Service Worker / Cache）並重新載入網頁。\n\n這樣可以強制取得最新版本（類似 Ctrl+F5）。\n\n本機資料（業主、案件、設定）不會受影響。\n\n確定？')) return;
+  toastProgress('🔄 清除快取中…');
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  } catch (err) {
+    console.error('清除快取失敗', err);
+  }
+  // 用 query string 破 HTTP cache，再 replace 確保不會走 back/forward cache
+  const url = location.pathname + '?_=' + Date.now();
+  location.replace(url);
+}
+
+// 更新 header 的版本標籤
+function updateVersionBadge() {
+  const el = document.getElementById('app-version-badge');
+  if (!el) return;
+  const local = APP_VERSION.replace(/^\d{4}-\d{2}-\d{2}-/, '');  // 只顯示 vX.Y.Z 部分
+  if (serverAppVersion && serverAppVersion !== APP_VERSION) {
+    const remote = serverAppVersion.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+    el.innerHTML = `${local} · <span style="color: var(--warning); font-weight: 600;">🆕 ${remote} 點此更新</span>`;
+    el.style.cursor = 'pointer';
+  } else {
+    el.innerHTML = `${local} · <span style="color: var(--muted);">最新</span>`;
+    el.style.cursor = 'pointer';
+    el.title = '點擊強制刷新（清除快取）';
+  }
+}
 
 function checkAppVersionUpdate() {
   // 啟動時：如果 localStorage 有舊版本記錄且不同 → 提示
@@ -5257,14 +5295,15 @@ async function pollAppVersion() {
     const html = await resp.text();
     const match = html.match(/<meta name="app-version" content="([^"]+)"/);
     if (!match) return;
-    const remoteVersion = match[1];
-    if (remoteVersion !== APP_VERSION) {
+    serverAppVersion = match[1];  // v2.7.5: 提供給 UI badge 用
+    updateVersionBadge();
+    if (serverAppVersion !== APP_VERSION) {
       const remind = document.getElementById('version-remind');
       if (!remind) {
         const div = document.createElement('div');
         div.id = 'version-remind';
         div.className = 'version-remind';
-        div.innerHTML = `🆕 APP 有新版本（${remoteVersion}），<a onclick="location.reload(true)" style="color:#fff;text-decoration:underline;cursor:pointer;">重新整理</a>`;
+        div.innerHTML = `🆕 APP 有新版本（${serverAppVersion}），<a onclick="hardReload()" style="color:#fff;text-decoration:underline;cursor:pointer;">點此強制更新</a>`;
         document.body.appendChild(div);
       }
     }
@@ -5586,6 +5625,8 @@ updateSheetSyncBadge();
 buildRangeOptions();
 setupAutoSave();
 checkAppVersionUpdate();
+updateVersionBadge();           // v2.7.5: 先把當前版號顯示出來
+setTimeout(pollAppVersion, 2000);  // 啟動 2 秒後檢查一次（不擋首次載入）
 setInterval(pollAppVersion, 5 * 60 * 1000);  // 每 5 分鐘檢查網頁新版
 renderAll();  // 啟動時全部畫一次
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.7.4">
+<meta name="app-version" content="2026-04-27-v2.7.5">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -40,7 +40,10 @@
     <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
       <div style="flex: 1; min-width: 0;">
         <h1 id="page-title">外包收益與排程管理</h1>
-        <div class="sub" id="page-sub">個人自由工作者工具</div>
+        <div class="sub" id="page-sub">
+          個人自由工作者工具 ·
+          <span id="app-version-badge" onclick="hardReload()" style="font-family: monospace; font-size: 11px; padding: 1px 6px; background: var(--bg); border-radius: 4px; cursor: pointer;" title="點擊強制刷新（清除快取）">載入中…</span>
+        </div>
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
         <button id="theme-toggle-btn" onclick="cycleTheme()" title="切換深淺色模式" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; font-size: 14px; cursor: pointer; color: var(--text);">🌗</button>

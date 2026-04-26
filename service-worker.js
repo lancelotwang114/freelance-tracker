@@ -2,7 +2,7 @@
 // 策略：app shell（HTML/CSS/JS）走 Cache-First，雲端 API 一律走 Network-Only
 // 升 CACHE_VERSION 會讓使用者下次開頁時自動取得新版
 
-const CACHE_VERSION = 'ftracker-v2.7';
+const CACHE_VERSION = 'ftracker-v2.7.5';
 const APP_SHELL = [
   './',
   './index.html',
