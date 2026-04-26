@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.8.0';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.8.1';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -715,13 +715,17 @@ function computeClientHealth(clientId) {
 }
 
 // v2.2 智慧待收款：依各業主的歷史平均收款週期判斷異常
+// v2.8.1: 改用 payments 第一筆日期計算（更精確；payments 為空才退回 paidAt）
 function computeSlowPayJobs(active) {
-  // 1. 計算每個業主的歷史「完成 → 收款」平均天數
-  const cycleByClient = {};  // clientId → { avg, count }
+  const cycleByClient = {};
   state.jobs.forEach(j => {
-    if (!j.doneAt || !j.paidAt || j.cancelled) return;
-    const days = daysBetween(j.doneAt, j.paidAt);
-    if (days < 0 || days > 365) return;  // 排除離群值
+    if (!j.doneAt || j.cancelled) return;
+    if (!jobIsFullyPaid(j)) return;
+    // 取該案件最早的 payment 日期當作「實際收款日」
+    const firstPay = (j.payments || []).map(p => p.date).filter(Boolean).sort()[0] || j.paidAt;
+    if (!firstPay) return;
+    const days = daysBetween(j.doneAt, firstPay);
+    if (days < 0 || days > 365) return;
     if (!cycleByClient[j.clientId]) cycleByClient[j.clientId] = { sum: 0, count: 0 };
     cycleByClient[j.clientId].sum += days;
     cycleByClient[j.clientId].count++;
@@ -729,14 +733,12 @@ function computeSlowPayJobs(active) {
   const today = todayStr();
   const slow = [];
   active.forEach(j => {
-    if (!j.done || j.paid) return;
+    if (!j.done || jobIsFullyPaid(j)) return;
     if (!j.doneAt) return;
     const stat = cycleByClient[j.clientId];
-    // 沒歷史資料 → 跳過（不亂警告）
     if (!stat || stat.count < 3) return;
     const avg = Math.round(stat.sum / stat.count);
     const daysSince = daysBetween(j.doneAt, today);
-    // 超過平均 1.5 倍且最少 14 天 → 警告
     if (daysSince > avg * 1.5 && daysSince > 14) {
       slow.push({ ...j, avgDays: avg, daysSince });
     }
@@ -945,16 +947,26 @@ function renderDashboard() {
   const m = thisMonth();
   const active = activeJobs();
   const monthJobs = active.filter(j => getMonth(j.date) === m);
-  const paidAmt = monthJobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const unpaidAmt = monthJobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const pendingAmt = monthJobs.filter(j => !j.done).reduce((s,j) => s + (+j.amount||0), 0);
+  // v2.8.1: 改用 finalAmount 與 payment 計算
+  // 「本月已收」= 本月所有 payment 加總（用 payment 的 date 歸月）
+  const paidAmt = active.reduce((s, j) => {
+    return s + (j.payments || []).filter(p => getMonth(p.date) === m).reduce((ss, p) => ss + (+p.amount || 0), 0);
+  }, 0);
+  // 「本月待收」= 本月案件（已完成）的 unpaid 加總
+  const unpaidAmt = monthJobs.filter(j => j.done).reduce((s, j) => s + jobUnpaidAmount(j), 0);
+  const pendingAmt = monthJobs.filter(j => !j.done).reduce((s, j) => s + jobUnpaidAmount(j), 0);
   const year = new Date().getFullYear();
-  const yearAmt = active.filter(j => j.paid && j.date && j.date.startsWith(year+'')).reduce((s,j) => s + (+j.amount||0), 0);
+  // 年度已收款：所有 payment 中 date 為今年的加總
+  const yearAmt = active.reduce((s, j) => {
+    return s + (j.payments || []).filter(p => p.date && p.date.startsWith(year+'')).reduce((ss, p) => ss + (+p.amount || 0), 0);
+  }, 0);
 
+  // 計數：本月已有任何 payment 的案件數
+  const paidJobCount = active.filter(j => (j.payments || []).some(p => getMonth(p.date) === m)).length;
   document.getElementById('stat-paid').textContent = fmt(paidAmt);
-  document.getElementById('stat-paid-sub').textContent = monthJobs.filter(j=>j.paid).length + ' 筆';
+  document.getElementById('stat-paid-sub').textContent = paidJobCount + ' 筆';
   document.getElementById('stat-unpaid').textContent = fmt(unpaidAmt);
-  document.getElementById('stat-unpaid-sub').textContent = monthJobs.filter(j=>j.done&&!j.paid).length + ' 筆';
+  document.getElementById('stat-unpaid-sub').textContent = monthJobs.filter(j=>j.done && !jobIsFullyPaid(j)).length + ' 筆';
   document.getElementById('stat-pending').textContent = fmt(pendingAmt);
   document.getElementById('stat-pending-sub').textContent = monthJobs.filter(j=>!j.done).length + ' 筆';
   document.getElementById('stat-year').textContent = fmt(yearAmt);
@@ -1784,15 +1796,28 @@ function renderRevenue() {
   let jobs = activeJobs();
   if (revenueState.clientId !== 'all') jobs = jobs.filter(j => j.clientId === revenueState.clientId);
 
-  // 依模式分組
+  // v2.8.1: 收益依「payment 日期」歸月（每筆 payment 各自歸到實際入帳月）
+  // 待收/進行中：用案件的 j.date 歸月（因為還沒收所以沒有 payment date）
   const buckets = {};
+  const ensureKey = (k) => { if (!buckets[k]) buckets[k] = { paid: 0, unpaid: 0, pending: 0 }; };
+
   jobs.forEach(j => {
+    // 各筆 payment 歸入該 payment 的月份/年份
+    (j.payments || []).forEach(p => {
+      if (!p.date) return;
+      const k = revenueState.mode === 'year' ? p.date.slice(0,4) : p.date.slice(0,7);
+      ensureKey(k);
+      buckets[k].paid += (+p.amount || 0);
+    });
+    // 未收的部分（unpaid/pending）依案件 j.date 歸月
     if (!j.date) return;
     const key = revenueState.mode === 'year' ? j.date.slice(0,4) : j.date.slice(0,7);
-    if (!buckets[key]) buckets[key] = { paid: 0, unpaid: 0, pending: 0 };
-    if (j.paid) buckets[key].paid += (+j.amount||0);
-    else if (j.done) buckets[key].unpaid += (+j.amount||0);
-    else buckets[key].pending += (+j.amount||0);
+    ensureKey(key);
+    const unpaidAmt = jobUnpaidAmount(j);
+    if (unpaidAmt > 0) {
+      if (j.done) buckets[key].unpaid += unpaidAmt;
+      else buckets[key].pending += unpaidAmt;
+    }
   });
 
   let keys = Object.keys(buckets).sort();
@@ -2407,9 +2432,13 @@ function renderClientRank(jobs, keysFilter) {
   scoped.forEach(j => {
     const cid = j.clientId || 'unknown';
     if (!byClient[cid]) byClient[cid] = { paid: 0, unpaid: 0, pending: 0, count: 0, jobIds: [] };
-    if (j.paid) byClient[cid].paid += (+j.amount||0);
-    else if (j.done) byClient[cid].unpaid += (+j.amount||0);
-    else byClient[cid].pending += (+j.amount||0);
+    // v2.8.1: 用 finalAmount + paymentTotal
+    const final = jobFinalAmount(j);
+    const paid = jobPaidTotal(j);
+    const unpaid = Math.max(0, final - paid - (+j.writeOff || 0));
+    byClient[cid].paid += paid;
+    if (j.done) byClient[cid].unpaid += unpaid;
+    else byClient[cid].pending += unpaid;
     byClient[cid].count++;
     byClient[cid].jobIds.push(j.id);
   });
@@ -3445,9 +3474,14 @@ function drawInvoice() {
     const m = getMonth(j.date);
     return m >= rangeStart && m <= rangeEnd;
   }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
-  const paidTotal = jobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const unpaidTotal = jobs.filter(j => j.done && !j.paid).reduce((s,j) => s + (+j.amount||0), 0);
-  const pendingTotal = jobs.filter(j => !j.done).reduce((s,j) => s + (+j.amount||0), 0);
+  // v2.8.1: 用 finalAmount + payment 計算
+  const grossTotal = jobs.reduce((s,j) => s + (+j.amount||0), 0);              // 原價合計
+  const discountTotal = jobs.reduce((s,j) => s + jobDiscountAmount(j), 0);      // 折扣合計
+  const finalTotal = jobs.reduce((s,j) => s + jobFinalAmount(j), 0);            // 應收合計
+  const paidTotal = jobs.reduce((s,j) => s + jobPaidTotal(j), 0);               // 實收合計
+  const unpaidTotal = jobs.filter(j => j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0);  // 待收（已完成）
+  const pendingTotal = jobs.filter(j => !j.done).reduce((s,j) => s + jobUnpaidAmount(j), 0); // 進行中
+  const writeOffTotal = jobs.reduce((s,j) => s + (+j.writeOff || 0), 0);        // 呆帳合計
 
   const u = config.userInfo || {};
   const hasMyInfo = u.name || u.email || u.phone;
@@ -3475,22 +3509,49 @@ function drawInvoice() {
       </div>
     </div>
     ${jobs.length ? `<table>
-      <thead><tr><th>日期</th><th>項目</th><th>說明</th><th class="num">金額</th><th>狀態</th></tr></thead>
+      <thead><tr><th>日期</th><th>項目</th><th>說明</th><th class="num">原價</th><th class="num">折扣</th><th class="num">應收</th><th class="num">已收</th><th>狀態</th></tr></thead>
       <tbody>
         ${jobs.map(j => {
-          const st = jobStatus(j);
-          const stLabel = st === 'paid' ? '<span class="badge-status paid">✓ 已收款</span>' :
-                          st === 'done-unpaid' ? '<span class="badge-status done-unpaid">$ 待收款</span>' :
-                          '<span class="badge-status pending">進行中</span>';
+          const final = jobFinalAmount(j);
+          const disc = jobDiscountAmount(j);
+          const gross = +j.amount || 0;
+          const paid = jobPaidTotal(j);
+          const unpaid = jobUnpaidAmount(j);
+          const wo = +j.writeOff || 0;
+          let stLabel;
+          if (jobIsFullyPaid(j)) {
+            stLabel = wo > 0
+              ? '<span class="badge-status paid" title="部分認列呆帳">✓ 結清</span>'
+              : '<span class="badge-status paid">✓ 已收款</span>';
+          } else if (paid > 0) {
+            stLabel = `<span class="badge-status done-unpaid">部分收款 · 還欠 ${fmt(unpaid).replace('NT$','').trim()}</span>`;
+          } else if (j.done) {
+            stLabel = '<span class="badge-status done-unpaid">$ 待收款</span>';
+          } else {
+            stLabel = '<span class="badge-status pending">進行中</span>';
+          }
           return `<tr>
             <td>${j.date||'-'}</td>
             <td>${escapeHtml(j.title||'-')}</td>
             <td style="color:var(--muted); font-size: 13px;">${escapeHtml(j.details||'')}</td>
-            <td class="num">${fmt(+j.amount||0)}</td>
+            <td class="num">${fmt(gross)}</td>
+            <td class="num" style="color: ${disc>0?'var(--warning)':'var(--muted)'};">${disc>0 ? '−' + fmt(disc).replace('NT$','').trim() : '—'}</td>
+            <td class="num"><b>${fmt(final)}</b></td>
+            <td class="num" style="color: ${paid>=final?'var(--success)':'var(--muted)'};">${paid>0 ? fmt(paid) : '—'}</td>
             <td>${stLabel}</td>
           </tr>`;
         }).join('')}
       </tbody>
+      <tfoot>
+        <tr style="border-top: 2px solid var(--text); font-weight: 600;">
+          <td colspan="3" style="text-align: right;">合計</td>
+          <td class="num">${fmt(grossTotal)}</td>
+          <td class="num" style="color: var(--warning);">${discountTotal>0 ? '−' + fmt(discountTotal).replace('NT$','').trim() : '—'}</td>
+          <td class="num">${fmt(finalTotal)}</td>
+          <td class="num" style="color: var(--success);">${fmt(paidTotal)}</td>
+          <td></td>
+        </tr>
+      </tfoot>
     </table>
     <div class="invoice-total">
       ${paidTotal ? `<div class="invoice-total-item paid">
@@ -3498,12 +3559,16 @@ function drawInvoice() {
         <div class="tot-value">${fmt(paidTotal)}</div>
       </div>` : ''}
       ${unpaidTotal ? `<div class="invoice-total-item pending">
-        <div class="tot-label">本次請款</div>
+        <div class="tot-label">本次請款（已完成待收）</div>
         <div class="tot-value">${fmt(unpaidTotal)}</div>
       </div>` : ''}
       ${pendingTotal ? `<div class="invoice-total-item" style="color: var(--muted);">
         <div class="tot-label">進行中（尚未請款）</div>
         <div class="tot-value" style="color: var(--muted);">${fmt(pendingTotal)}</div>
+      </div>` : ''}
+      ${writeOffTotal ? `<div class="invoice-total-item" style="color: var(--muted);">
+        <div class="tot-label">呆帳（不再追討）</div>
+        <div class="tot-value" style="color: var(--muted);">${fmt(writeOffTotal)}</div>
       </div>` : ''}
     </div>
 
