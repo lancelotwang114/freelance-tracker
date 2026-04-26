@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-25-v1.3">
+<meta name="app-version" content="2026-04-26-v1.7">
 <title>外包收益與排程管理</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -386,6 +386,28 @@
           <button class="btn btn-outline btn-sm" onclick="pullFromSheet(false)">⬇️ 從雲端下載</button>
           <button class="btn btn-outline btn-sm" onclick="pushToSheet(false)">⬆️ 上傳到雲端</button>
           <button class="btn btn-outline btn-sm" onclick="showSnapshotList()">🗂️ 備份歷史</button>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <!-- 手動 Snapshot -->
+        <div style="margin-bottom: 12px;">
+          <label style="font-size: 13px;">手動建立備份（永久保留，不會被自動清理）</label>
+          <p style="font-size: 11px; color: var(--muted); margin: 2px 0 6px;">
+            重要時間點建議手動建一次（例：月底結算前、大量編輯前）
+          </p>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="manual-snapshot-note" placeholder="備註（例：4月結算前）" style="flex: 1;">
+            <button class="btn btn-primary btn-sm" onclick="manualSnapshot()">📸 建立備份</button>
+          </div>
+        </div>
+
+        <!-- 每日強制 Snapshot Trigger -->
+        <div style="margin-bottom: 4px;">
+          <button class="btn btn-outline btn-sm" onclick="setupDailyForceTrigger()">⏰ 啟用每日強制備份（凌晨 03:00）</button>
+          <p style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+            每天凌晨 3 點 Apps Script 自動跑一次強制 snapshot，永久保留。即使所有 PC 都關機也會跑（雲端排程）。首次設定時 Google 會要求授權。
+          </p>
         </div>
 
         <div class="section-divider"></div>

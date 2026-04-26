@@ -62,8 +62,11 @@ function handle_(e, method) {
       case 'list':
         return json_({ ok: true, data: readAll_(), meta: getMeta_(), listedAt: new Date().toISOString() });
       case 'save':
-        // 寫入前自動 snapshot，避免資料遺失
-        snapshotCurrent_(params.snapshotNote || 'before save');
+        // 寫入前自動 snapshot（含冷卻判斷與分層 tier）
+        snapshotCurrent_(params.snapshotNote || 'auto-save', {
+          tier: 'auto',
+          device: params.deviceLabel || 'unknown'
+        });
         writeAll_(params.data || {});
         updateMeta_(params.deviceLabel || 'unknown');
         return json_({ ok: true, savedAt: new Date().toISOString(), meta: getMeta_() });
@@ -72,7 +75,24 @@ function handle_(e, method) {
       case 'getSnapshot':
         return json_({ ok: true, snapshot: getSnapshot_(params.snapshotId) });
       case 'restoreSnapshot':
-        return json_({ ok: true, result: restoreSnapshot_(params.snapshotId) });
+        return json_({ ok: true, result: restoreSnapshot_(params.snapshotId, params.deviceLabel || 'unknown') });
+      case 'manualSnapshot':
+        return json_({ ok: true, result: snapshotCurrent_(params.note || '手動備份', {
+          tier: 'manual',
+          device: params.deviceLabel || 'unknown'
+        }) });
+      case 'pruneSnapshots':
+        return json_({ ok: true, result: pruneSnapshots_() });
+      case 'setupDailyTrigger':
+        return json_({ ok: true, result: setupDailyTrigger() });
+      case 'acquireLock':
+        return json_({ ok: true, lock: acquireLock_(params.deviceLabel || 'unknown') });
+      case 'releaseLock':
+        return json_({ ok: true, result: releaseLock_(params.deviceLabel || 'unknown') });
+      case 'getLock':
+        return json_({ ok: true, lock: getLockStatus_() });
+      case 'forceReleaseLock':
+        return json_({ ok: true, result: releaseLock_(null, true) });
       case 'testCalendar':
         return json_({ ok: true, result: testCalendar_(params.calendarId) });
       case 'syncCalendar':
@@ -237,27 +257,86 @@ function json_(obj) {
 }
 
 // ============== Snapshot 備份機制（防止資料遺失）==============
+// v2: 分層保留 + 冷卻 + 每日強制 + 編輯鎖
+
+const SNAPSHOT_COLS = ['id', 'timestamp', 'tier', 'device', 'note', 'data'];
+const SNAPSHOT_RETENTION = {
+  cooldownMinutes: 5,        // auto tier 冷卻時間
+  hourlyKeepHours: 24,       // 最近 24 小時每小時保 1
+  dailyKeepDays: 30,         // 過去 30 天每天保 1
+  weeklyKeepWeeks: 12        // 過去 12 週每週保 1
+};
+const PERMANENT_TIERS = ['force', 'manual', 'restore'];
 
 /**
- * 把目前 Sheet 的所有資料壓縮成 JSON，存到 snapshots 分頁當備份。
- * 每次 writeAll_ 前會自動呼叫。
- * 超過 20 個 snapshot 會刪最舊的（避免分頁爆滿）。
+ * 確保 snapshots 分頁存在且為新 schema（6 欄）。
+ * 自動偵測舊 schema（4 欄）並升級。
  */
-function snapshotCurrent_(note) {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName('snapshots');
-    if (!sheet) {
-      sheet = ss.insertSheet('snapshots');
-      sheet.getRange(1, 1, 1, 4).setValues([['id', 'timestamp', 'note', 'data']]);
+function ensureSnapshotSchema_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('snapshots');
+  if (!sheet) {
+    sheet = ss.insertSheet('snapshots');
+    sheet.getRange(1, 1, 1, SNAPSHOT_COLS.length).setValues([SNAPSHOT_COLS]);
+    sheet.setFrozenRows(1);
+    sheet.setColumnWidth(1, 100);
+    sheet.setColumnWidth(2, 180);
+    sheet.setColumnWidth(3, 80);
+    sheet.setColumnWidth(4, 120);
+    sheet.setColumnWidth(5, 200);
+    sheet.setColumnWidth(6, 400);
+    return sheet;
+  }
+  // 偵測舊 schema 並升級
+  const lastCol = sheet.getLastColumn();
+  if (lastCol < SNAPSHOT_COLS.length) {
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1 && lastCol === 4) {
+      // 舊版 [id, timestamp, note, data] → [id, timestamp, 'legacy', '', note, data]
+      const oldData = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+      sheet.clear();
+      sheet.getRange(1, 1, 1, SNAPSHOT_COLS.length).setValues([SNAPSHOT_COLS]);
       sheet.setFrozenRows(1);
-      sheet.setColumnWidth(1, 100);
-      sheet.setColumnWidth(2, 180);
-      sheet.setColumnWidth(3, 200);
-      sheet.setColumnWidth(4, 400);
+      const newData = oldData.map(r => [r[0], r[1], 'legacy', '', r[2], r[3]]);
+      sheet.getRange(2, 1, newData.length, SNAPSHOT_COLS.length).setValues(newData);
+    } else {
+      sheet.getRange(1, 1, 1, SNAPSHOT_COLS.length).setValues([SNAPSHOT_COLS]);
+      sheet.setFrozenRows(1);
+    }
+  }
+  return sheet;
+}
+
+/**
+ * 建立一個 snapshot。
+ * @param note  備註文字
+ * @param opts  { tier: 'auto'|'manual'|'force'|'restore', device: '...' }
+ *
+ * tier 規則：
+ *   auto    - 一般推送，受 5 分鐘冷卻；超過保留期會被 prune 刪掉
+ *   manual  - 使用者手動觸發；永久保留（最多 50 份）
+ *   force   - 每日強制（Apps Script trigger）；永久保留
+ *   restore - 還原前的自動備份；永久保留
+ */
+function snapshotCurrent_(note, opts) {
+  try {
+    opts = opts || {};
+    const tier = opts.tier || 'auto';
+    const device = opts.device || 'unknown';
+
+    // 冷卻判斷（只對 auto tier 套用）
+    if (tier === 'auto') {
+      const meta = getMeta_() || {};
+      const lastAt = meta.lastSnapshotAt ? new Date(meta.lastSnapshotAt) : null;
+      const now = new Date();
+      if (lastAt && (now - lastAt) < SNAPSHOT_RETENTION.cooldownMinutes * 60 * 1000) {
+        return { skipped: true, reason: 'cooldown' };
+      }
     }
 
-    // 讀當前資料（如果完全是空的就不備份，避免首次設定時白佔一格）
+    const sheet = ensureSnapshotSchema_();
+
+    // 讀當前資料；空資料不備份
     const current = readAll_();
     const jobCount = (current.jobs || []).length;
     const clientCount = (current.clients || []).length;
@@ -266,33 +345,136 @@ function snapshotCurrent_(note) {
     const id = Utilities.getUuid().slice(0, 8);
     const ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
     const data = JSON.stringify(current);
-    const finalNote = `[${clientCount} clients, ${jobCount} jobs] ${note || ''}`;
+    const finalNote = `[${clientCount}c, ${jobCount}j] ${note || ''}`;
 
-    sheet.appendRow([id, ts, finalNote, data]);
+    sheet.appendRow([id, ts, tier, device, finalNote, data]);
 
-    // 保留最近 20 個
-    const lastRow = sheet.getLastRow();
-    if (lastRow > 21) {
-      sheet.deleteRows(2, lastRow - 21);
+    // 更新 meta 的 lastSnapshotAt（只 auto/force 觸發冷卻）
+    if (tier === 'auto' || tier === 'force') {
+      setMetaField_('lastSnapshotAt', new Date().toISOString());
     }
 
-    return { id, timestamp: ts };
+    // 自動 prune（async-safe，包 try/catch）
+    try { pruneSnapshots_(); } catch (e) { Logger.log('prune failed: ' + e.message); }
+
+    return { id, timestamp: ts, tier };
   } catch (err) {
-    // 備份失敗不該擋主流程，但記錄錯誤
     Logger.log('Snapshot failed: ' + err.message);
     return null;
   }
 }
 
 /**
- * 列出所有 snapshot（含詳細統計：業主數、案件數、總金額）
+ * 分層保留策略，刪除過時 auto snapshot。
+ * 永久保留：force / manual / restore
+ * Hourly：最近 24 小時內，每小時保 1
+ * Daily：過去 30 天內，每天保 1
+ * Weekly：過去 12 週內，每週保 1
+ * 超過範圍的 auto/legacy 直接刪
+ */
+function pruneSnapshots_() {
+  const sheet = ensureSnapshotSchema_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { kept: 0, deleted: 0 };
+
+  const all = sheet.getRange(2, 1, lastRow - 1, SNAPSHOT_COLS.length).getValues();
+  const now = Date.now();
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+  const WEEK = 7 * DAY;
+
+  const items = all.map((row, i) => {
+    const ts = row[1] instanceof Date ? row[1].getTime() : new Date(row[1]).getTime();
+    return {
+      rowIndex: i + 2,
+      id: row[0],
+      timestamp: ts,
+      tier: String(row[2] || 'auto'),
+      ageMs: now - ts
+    };
+  }).filter(s => !isNaN(s.timestamp) && s.id);
+
+  const toKeep = new Set();
+
+  // 永久保留
+  items.forEach(s => {
+    if (PERMANENT_TIERS.indexOf(s.tier) >= 0) toKeep.add(s.id);
+  });
+
+  // Hourly bucket
+  const buckets = { hourly: {}, daily: {}, weekly: {} };
+  items.forEach(s => {
+    if (toKeep.has(s.id)) return;
+    if (s.ageMs < SNAPSHOT_RETENTION.hourlyKeepHours * HOUR) {
+      const key = Math.floor(s.timestamp / HOUR);
+      if (!buckets.hourly[key] || s.timestamp < buckets.hourly[key].timestamp) {
+        buckets.hourly[key] = s;
+      }
+    } else if (s.ageMs < SNAPSHOT_RETENTION.dailyKeepDays * DAY) {
+      const key = Math.floor(s.timestamp / DAY);
+      if (!buckets.daily[key] || s.timestamp < buckets.daily[key].timestamp) {
+        buckets.daily[key] = s;
+      }
+    } else if (s.ageMs < SNAPSHOT_RETENTION.weeklyKeepWeeks * WEEK) {
+      const key = Math.floor(s.timestamp / WEEK);
+      if (!buckets.weekly[key] || s.timestamp < buckets.weekly[key].timestamp) {
+        buckets.weekly[key] = s;
+      }
+    }
+  });
+  Object.keys(buckets).forEach(b => {
+    Object.keys(buckets[b]).forEach(k => toKeep.add(buckets[b][k].id));
+  });
+
+  // 收集要刪的 row index（從下往上刪避免 index 位移）
+  const toDelete = items.filter(s => !toKeep.has(s.id))
+                         .map(s => s.rowIndex)
+                         .sort(function(a,b){ return b-a; });
+
+  toDelete.forEach(r => sheet.deleteRow(r));
+
+  Logger.log('Prune: kept ' + toKeep.size + ', deleted ' + toDelete.length);
+  return { kept: toKeep.size, deleted: toDelete.length };
+}
+
+/**
+ * 每日強制 snapshot（Apps Script 時間觸發器呼叫）
+ */
+function dailyForceSnapshot() {
+  const dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return snapshotCurrent_('daily-' + dateStr, { tier: 'force', device: 'auto-trigger' });
+}
+
+/**
+ * 設定每日 trigger（部署後執行一次即可）
+ * 每天凌晨 3-4 點之間 trigger 一次
+ */
+function setupDailyTrigger() {
+  const all = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  all.forEach(t => {
+    if (t.getHandlerFunction() === 'dailyForceSnapshot') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  ScriptApp.newTrigger('dailyForceSnapshot')
+    .timeBased()
+    .atHour(3)
+    .everyDays(1)
+    .create();
+  return { removed: removed, created: 1, runsAt: '03:00-04:00 daily' };
+}
+
+/**
+ * 列出所有 snapshot（含 tier、device）
  */
 function listSnapshots_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('snapshots');
-  if (!sheet || sheet.getLastRow() < 2) return [];
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
-  return values.reverse().map(([id, ts, note, dataJson]) => {
+  const sheet = ensureSnapshotSchema_();
+  if (sheet.getLastRow() < 2) return [];
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, SNAPSHOT_COLS.length).getValues();
+  return values.reverse().map(row => {
+    const [id, ts, tier, device, note, dataJson] = row;
     let stats = { clients: 0, jobs: 0, totalAmount: 0 };
     try {
       const obj = JSON.parse(dataJson);
@@ -303,6 +485,8 @@ function listSnapshots_() {
     return {
       id: String(id),
       timestamp: ts instanceof Date ? Utilities.formatDate(ts, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : String(ts),
+      tier: String(tier || 'auto'),
+      device: String(device || ''),
       note: String(note || ''),
       stats
     };
@@ -313,18 +497,20 @@ function listSnapshots_() {
  * 取得特定 snapshot 的完整內容（用於前端預覽）
  */
 function getSnapshot_(snapshotId) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('snapshots');
-  if (!sheet) throw new Error('沒有 snapshots 分頁');
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+  const sheet = ensureSnapshotSchema_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('沒有 snapshot 紀錄');
+  const values = sheet.getRange(2, 1, lastRow - 1, SNAPSHOT_COLS.length).getValues();
   const row = values.find(r => String(r[0]) === String(snapshotId));
   if (!row) throw new Error('找不到 snapshot: ' + snapshotId);
   try {
     return {
       id: String(row[0]),
       timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : String(row[1]),
-      note: String(row[2] || ''),
-      data: JSON.parse(row[3])
+      tier: String(row[2] || ''),
+      device: String(row[3] || ''),
+      note: String(row[4] || ''),
+      data: JSON.parse(row[5])
     };
   } catch (e) {
     throw new Error('Snapshot 解析失敗：' + e.message);
@@ -360,13 +546,21 @@ function updateMeta_(deviceLabel) {
     const ts = new Date().toISOString();
     const version = (+existing.version || 0) + 1;
     const data = readAll_();
-    const newRows = [
+    // 保留其他欄位（lastSnapshotAt、editLock 等），只更新核心欄位
+    const preservedKeys = ['lastSnapshotAt', 'editLockBy', 'editLockAt', 'editLockExpiresAt'];
+    const preserved = {};
+    preservedKeys.forEach(k => { if (existing[k]) preserved[k] = existing[k]; });
+
+    const coreRows = [
       ['version', version],
       ['lastModifiedAt', ts],
       ['lastDevice', deviceLabel || 'unknown'],
       ['clientsCount', (data.clients || []).length],
       ['jobsCount', (data.jobs || []).length]
     ];
+    const preservedRows = Object.keys(preserved).map(k => [k, preserved[k]]);
+    const newRows = coreRows.concat(preservedRows);
+
     if (sheet.getLastRow() > 1) {
       sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).clearContent();
     }
@@ -377,31 +571,128 @@ function updateMeta_(deviceLabel) {
 }
 
 /**
- * 還原某個 snapshot
- * 還原前會先 snapshot 當前狀態（以防還原錯了還能回來）
+ * 單獨更新 metadata 中的某個 key（不影響其他 key）
  */
-function restoreSnapshot_(snapshotId) {
+function setMetaField_(key, value) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('snapshots');
-  if (!sheet) throw new Error('沒有 snapshots 分頁');
+  let sheet = ss.getSheetByName('metadata');
+  if (!sheet) {
+    sheet = ss.insertSheet('metadata');
+    sheet.getRange(1, 1, 1, 2).setValues([['key', 'value']]);
+    sheet.setFrozenRows(1);
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    sheet.appendRow([key, value]);
+    return;
+  }
+  const range = sheet.getRange(2, 1, lastRow - 1, 2);
+  const values = range.getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0]) === String(key)) {
+      sheet.getRange(i + 2, 2).setValue(value);
+      return;
+    }
+  }
+  sheet.appendRow([key, value]);
+}
 
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+// ============== 編輯鎖機制（軟鎖，5 分鐘 TTL）==============
+
+const LOCK_TTL_MINUTES = 5;
+
+/**
+ * 取得鎖狀態（不會嘗試取得鎖）
+ */
+function getLockStatus_() {
+  const meta = getMeta_() || {};
+  const lockBy = meta.editLockBy;
+  const expiresAt = meta.editLockExpiresAt ? new Date(meta.editLockExpiresAt) : null;
+  if (!lockBy || !expiresAt) return { locked: false };
+  // 過期視為無鎖
+  if (expiresAt.getTime() < Date.now()) return { locked: false, expired: true };
+  return {
+    locked: true,
+    by: lockBy,
+    expiresAt: expiresAt.toISOString(),
+    remainingMs: expiresAt.getTime() - Date.now()
+  };
+}
+
+/**
+ * 嘗試取得鎖（同一裝置呼叫會 heartbeat 延長）
+ */
+function acquireLock_(deviceLabel) {
+  const status = getLockStatus_();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + LOCK_TTL_MINUTES * 60 * 1000);
+
+  // 沒鎖 OR 鎖已過期 OR 是自己 → 可取得/延長
+  if (!status.locked || status.by === deviceLabel) {
+    setMetaField_('editLockBy', deviceLabel);
+    setMetaField_('editLockAt', now.toISOString());
+    setMetaField_('editLockExpiresAt', expiresAt.toISOString());
+    return {
+      acquired: true,
+      by: deviceLabel,
+      expiresAt: expiresAt.toISOString(),
+      remainingMs: LOCK_TTL_MINUTES * 60 * 1000
+    };
+  }
+  // 別人持有鎖
+  return {
+    acquired: false,
+    by: status.by,
+    expiresAt: status.expiresAt,
+    remainingMs: status.remainingMs
+  };
+}
+
+/**
+ * 釋放鎖。force=true 可強制清除（即使不是自己持有）
+ */
+function releaseLock_(deviceLabel, force) {
+  const status = getLockStatus_();
+  if (!status.locked) return { released: false, reason: 'not-locked' };
+  if (!force && status.by !== deviceLabel) {
+    return { released: false, reason: 'not-owner', currentOwner: status.by };
+  }
+  setMetaField_('editLockBy', '');
+  setMetaField_('editLockAt', '');
+  setMetaField_('editLockExpiresAt', '');
+  return { released: true };
+}
+
+/**
+ * 還原某個 snapshot
+ * 還原前會先用 'restore' tier 自動 snapshot 當前狀態（永久保留）
+ */
+function restoreSnapshot_(snapshotId, deviceLabel) {
+  const sheet = ensureSnapshotSchema_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('沒有 snapshot 紀錄');
+  const values = sheet.getRange(2, 1, lastRow - 1, SNAPSHOT_COLS.length).getValues();
   const row = values.find(r => String(r[0]) === String(snapshotId));
   if (!row) throw new Error('找不到 snapshot: ' + snapshotId);
 
-  const data = JSON.parse(row[3]);
+  const data = JSON.parse(row[5]);
 
-  // 還原前先備份當前狀態
-  snapshotCurrent_(`before restore ${snapshotId}`);
+  // 還原前先用 'restore' tier 備份（永久保留）
+  snapshotCurrent_('before restore ' + snapshotId, {
+    tier: 'restore',
+    device: deviceLabel || 'unknown'
+  });
 
-  // 直接寫（避開再次 snapshot 迴圈）
   if (data.clients) writeTable_('clients', data.clients);
   if (data.jobs) writeTable_('jobs', data.jobs);
   if (data.config) writeConfig_(data.config);
 
+  // 還原後 bump version
+  updateMeta_(deviceLabel || 'restore-op');
+
   return {
     restoredFrom: snapshotId,
-    restoredAt: row[1],
+    restoredAt: row[1] instanceof Date ? Utilities.formatDate(row[1], Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : row[1],
     clientCount: (data.clients || []).length,
     jobCount: (data.jobs || []).length
   };

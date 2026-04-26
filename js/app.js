@@ -1157,8 +1157,7 @@ function buildRangeOptions() {
   if (revenueState.mode === 'year') {
     const thisY = new Date().getFullYear();
     const startY = thisY - 4;
-    // 預設：顯示具體年份範圍而非「最近 5 年」
-    html += `<option value="5" selected>📅 ${startY} ~ ${thisY}</option>`;
+    html += `<option value="5" selected>📅 近五年</option>`;
     html += '<option disabled>── 單一年度 ──</option>';
     for (let y = thisY; y >= startY; y--) {
       html += `<option value="year-${y}">${y}</option>`;
@@ -2151,8 +2150,9 @@ function confirmPaidDate() {
 // ----- Job Modal -----
 let editingJobId = null;
 
-function openJobModal() {
+async function openJobModal() {
   if (!state.clients.length) { toast('請先新增業主'); switchTab('clients'); openClientModal(); return; }
+  await tryAcquireLockOrWarn('案件');
   editingJobId = null;
   document.getElementById('job-modal-title').textContent = '新增案件';
   document.getElementById('job-delete-btn').classList.add('hidden');
@@ -2249,6 +2249,7 @@ function onJobPaidChange() {
 function closeJobModal() {
   document.getElementById('job-modal').classList.remove('open');
   document.getElementById('job-date').value = '';  // 清空避免殘留快速新增的日期
+  releaseEditLock();
 }
 
 function saveJob() {
@@ -2315,7 +2316,8 @@ function deleteJob() {
 let editingClientId = null;
 let pickedColor = COLORS[0];
 
-function openClientModal() {
+async function openClientModal() {
+  await tryAcquireLockOrWarn('業主');
   editingClientId = null;
   document.getElementById('client-modal-title').textContent = '新增業主';
   document.getElementById('client-delete-btn').classList.add('hidden');
@@ -2438,7 +2440,10 @@ function refreshCommissionDropdown(selected) {
       .map(c => `<option value="${c.id}" ${selected===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
 }
 
-function closeClientModal() { document.getElementById('client-modal').classList.remove('open'); }
+function closeClientModal() {
+  document.getElementById('client-modal').classList.remove('open');
+  releaseEditLock();
+}
 
 function renderColorPicker(selected) {
   pickedColor = selected;
@@ -2947,6 +2952,10 @@ function setSyncStatus(status, err) {
       icon = '⚠'; cls = 'offline';
       text = '離線' + pendingNote;
       break;
+    case 'idle-paused':
+      icon = '💤'; cls = 'offline';
+      text = '閒置暫停' + pendingNote;
+      break;
     case 'error':
       icon = '✗'; cls = 'error'; text = '失敗';
       break;
@@ -3100,9 +3109,191 @@ async function pushToSheet(silent = false, force = false) {
   }
 }
 
+// ============== Idle 偵測（10 分鐘無操作 → 暫停自動 push）==============
+const IDLE_THRESHOLD_MS = 10 * 60 * 1000;
+let lastActivityAt = Date.now();
+let idleNotified = false;
+
+['mousedown', 'keydown', 'touchstart'].forEach(evt => {
+  document.addEventListener(evt, () => {
+    const wasIdle = (Date.now() - lastActivityAt) > IDLE_THRESHOLD_MS;
+    lastActivityAt = Date.now();
+    idleNotified = false;
+    // 從 idle 喚醒：先 pull 再清待推送旗標
+    if (wasIdle && config.sheetSyncEnabled && config.sheetPendingPush) {
+      pullFromSheet(true).then(() => {
+        if (config.sheetPendingPush) pushToSheet(true);
+      });
+    }
+  }, { passive: true });
+});
+
+function isIdle() {
+  return (Date.now() - lastActivityAt) > IDLE_THRESHOLD_MS;
+}
+
+// ============== 編輯鎖（軟鎖，5 分鐘 TTL，60 秒 heartbeat）==============
+let lockHeartbeatTimer = null;
+let currentLockHolder = null;  // 當前知道的持鎖者
+let myLockActive = false;
+
+// 開啟 modal 前嘗試取鎖，被別人鎖住時用 toast 警告但不擋（讓使用者知道風險）
+async function tryAcquireLockOrWarn(label) {
+  const result = await acquireEditLock(label);
+  if (!result.acquired && result.by) {
+    const remainingMin = Math.ceil((new Date(result.expiresAt) - Date.now()) / 60000);
+    toast(`⚠️ 「${result.by}」正在編輯中（剩 ${remainingMin} 分鐘）。建議等對方關閉後再操作。`, 6000);
+  }
+}
+
+async function acquireEditLock(reason) {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken || !config.sheetSyncEnabled) return { acquired: true, local: true };
+  try {
+    const resp = await fetch(cfg.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'acquireLock',
+        token: cfg.apiToken,
+        deviceLabel: getDeviceLabel()
+      })
+    });
+    const data = await resp.json();
+    if (!data.ok) return { acquired: false, error: data.error };
+    if (data.lock?.acquired) {
+      myLockActive = true;
+      currentLockHolder = getDeviceLabel();
+      startLockHeartbeat();
+      return { acquired: true };
+    }
+    // 別人持有鎖
+    currentLockHolder = data.lock.by;
+    return { acquired: false, by: data.lock.by, expiresAt: data.lock.expiresAt };
+  } catch (err) {
+    return { acquired: true, local: true };  // 連不上時放行（離線編輯）
+  }
+}
+
+async function releaseEditLock() {
+  stopLockHeartbeat();
+  myLockActive = false;
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken || !config.sheetSyncEnabled) return;
+  try {
+    await fetch(cfg.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'releaseLock',
+        token: cfg.apiToken,
+        deviceLabel: getDeviceLabel()
+      })
+    });
+  } catch (err) {}
+}
+
+async function forceReleaseEditLock() {
+  if (!confirm(`確定要強制清除其他裝置的鎖？\n\n（如果那台 PC 還在編輯，可能會發生資料衝突）`)) return;
+  const cfg = config.sheetConfig;
+  try {
+    await fetch(cfg.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'forceReleaseLock', token: cfg.apiToken })
+    });
+    toast('✓ 已強制清除鎖');
+    currentLockHolder = null;
+    updateSheetSyncBadge();
+  } catch (err) {
+    toast('清除失敗：' + err.message);
+  }
+}
+
+function startLockHeartbeat() {
+  stopLockHeartbeat();
+  lockHeartbeatTimer = setInterval(async () => {
+    if (!myLockActive) return;
+    await acquireEditLock('heartbeat');
+  }, 60 * 1000);
+}
+
+function stopLockHeartbeat() {
+  if (lockHeartbeatTimer) { clearInterval(lockHeartbeatTimer); lockHeartbeatTimer = null; }
+}
+
+// 在 page unload 時釋放鎖
+window.addEventListener('beforeunload', () => {
+  if (myLockActive) {
+    // 用 sendBeacon 確保送出（fetch 可能會被取消）
+    const cfg = config.sheetConfig;
+    if (cfg?.apiUrl) {
+      navigator.sendBeacon(cfg.apiUrl, JSON.stringify({
+        action: 'releaseLock',
+        token: cfg.apiToken,
+        deviceLabel: getDeviceLabel()
+      }));
+    }
+  }
+});
+
+// 手動 snapshot
+async function manualSnapshot() {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken) { toast('請先設定雲端同步'); return; }
+  const note = (document.getElementById('manual-snapshot-note')?.value || '').trim() || '手動備份';
+  toastProgress('📸 建立 snapshot...');
+  try {
+    const resp = await fetch(cfg.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'manualSnapshot',
+        token: cfg.apiToken,
+        note,
+        deviceLabel: getDeviceLabel()
+      })
+    });
+    const data = await resp.json();
+    if (data.ok && data.result) {
+      toast('✓ 已建立手動備份（永久保留）');
+      const noteInput = document.getElementById('manual-snapshot-note');
+      if (noteInput) noteInput.value = '';
+    } else {
+      toast('建立失敗：' + (data.error || '未知錯誤'));
+    }
+  } catch (err) {
+    toast('錯誤：' + err.message);
+  }
+}
+
+// 觸發每日 trigger 設定
+async function setupDailyForceTrigger() {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken) { toast('請先設定雲端同步'); return; }
+  if (!confirm(`設定每日凌晨 03:00 自動建立強制 snapshot？\n\n首次設定會要求 Apps Script 授權 trigger 權限。`)) return;
+  toastProgress('⏰ 建立 trigger...');
+  try {
+    const resp = await fetch(cfg.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'setupDailyTrigger', token: cfg.apiToken })
+    });
+    const data = await resp.json();
+    if (data.ok) toast('✓ 每日強制 snapshot 已啟用（每天 03:00）', 4000);
+    else toast('設定失敗：' + data.error);
+  } catch (err) {
+    toast('錯誤：' + err.message);
+  }
+}
+
 function schedulePush() {
   // 只有「啟用自動同步」狀態下才會自動推
   if (!config.sheetSyncEnabled) return;
+  // Idle 保護：超過 10 分鐘無互動就先標記待推送，等使用者回來再推
+  if (isIdle()) {
+    config.sheetPendingPush = true;
+    if (!idleNotified) {
+      setSyncStatus('idle-paused');
+      idleNotified = true;
+    }
+    return;
+  }
   clearTimeout(syncTimer);
   setSyncStatus('syncing');
   syncTimer = setTimeout(() => pushToSheet(true), 2000);
@@ -3242,11 +3433,22 @@ async function showSnapshotList() {
         const stats = s.stats || {};
         const cls = i === 0 ? 'recent' : '';
         const tag = i === 0 ? '<span class="badge-status paid" style="margin-left: 6px;">最新</span>' : '';
+        // Tier 標籤顏色
+        const tierMap = {
+          'force':   { label: '🔒 每日強制', color: 'var(--primary)', bg: 'var(--primary-light)' },
+          'manual':  { label: '✋ 手動', color: 'var(--success)', bg: 'var(--success-light)' },
+          'restore': { label: '↩️ 還原前', color: 'var(--warning)', bg: 'var(--warning-light)' },
+          'auto':    { label: '⚙️ 自動', color: 'var(--muted)', bg: 'var(--bg)' },
+          'legacy':  { label: '📦 舊版', color: 'var(--muted)', bg: 'var(--bg)' }
+        };
+        const tier = tierMap[s.tier] || tierMap.auto;
+        const tierBadge = `<span style="background:${tier.bg}; color:${tier.color}; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:600;">${tier.label}</span>`;
+        const deviceText = s.device ? ` · ${escapeHtml(s.device)}` : '';
         return `<div class="snapshot-row ${cls}">
           <div class="snapshot-info">
-            <div class="snapshot-time">${s.timestamp}${tag}</div>
+            <div class="snapshot-time">${s.timestamp}${tag} ${tierBadge}</div>
             <div class="snapshot-stats">
-              ${stats.clients || 0} 業主 · ${stats.jobs || 0} 案件 · 總額 ${fmt(stats.totalAmount || 0)}
+              ${stats.clients || 0} 業主 · ${stats.jobs || 0} 案件 · 總額 ${fmt(stats.totalAmount || 0)}${deviceText}
             </div>
             <div class="snapshot-stats">${escapeHtml(s.note || '—')}</div>
             <div class="snapshot-stats" style="font-family: monospace;">ID: ${s.id}</div>
