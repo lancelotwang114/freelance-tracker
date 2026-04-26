@@ -24,9 +24,22 @@ const API_TOKEN = 'CHANGE_ME_TO_A_LONG_RANDOM_STRING';
 // 這個 token 絕對不能外流 — 有這個 token 的人就能讀寫你全部資料。
 // ================================
 
+// v2.9.1: 補上所有 v2.6+ 新欄位（之前漏掉造成 push round-trip 砍欄位）
 const COLS = {
-  clients: ['id', 'name', 'color', 'note', 'commissionRate', 'commissionTo', 'prepaidMode', 'prepayments'],
-  jobs:    ['id', 'clientId', 'date', 'title', 'details', 'amount', 'done', 'paid', 'doneAt', 'paidAt', 'endDate', 'tag', 'cancelled'],
+  clients: [
+    'id', 'name', 'color', 'note',
+    'commissionRate', 'commissionTo',
+    'prepaidMode', 'prepayments',
+    'billingDay', 'billingRemindDays', 'unpaidRemindDaysOverride'  // v2.7.9
+  ],
+  jobs: [
+    'id', 'clientId', 'date', 'title', 'details', 'amount',
+    'done', 'paid', 'doneAt', 'paidAt',
+    'endDate', 'tag', 'cancelled',
+    'hoursWorked',                                       // v2.6
+    'isEstimate', 'subtasks', 'timeSpentMs',             // v2.6
+    'discountType', 'discountValue', 'payments', 'writeOff'  // v2.8.0
+  ],
   config:  ['key', 'value']
 };
 
@@ -150,14 +163,30 @@ function readTable_(name) {
       const obj = {};
       cols.forEach((c, i) => {
         let v = row[i];
-        if (c === 'amount' || c === 'commissionRate') v = Number(v) || 0;
-        if (c === 'done' || c === 'paid' || c === 'cancelled' || c === 'prepaidMode') {
+        // 數值
+        if (c === 'amount' || c === 'commissionRate' || c === 'discountValue' ||
+            c === 'writeOff' || c === 'timeSpentMs' || c === 'billingDay' ||
+            c === 'billingRemindDays') {
+          v = Number(v) || 0;
+        }
+        // hoursWorked / unpaidRemindDaysOverride 可為 null
+        if (c === 'hoursWorked' || c === 'unpaidRemindDaysOverride') {
+          v = (v === '' || v == null) ? null : (Number(v) || 0);
+        }
+        // 布林
+        if (c === 'done' || c === 'paid' || c === 'cancelled' || c === 'prepaidMode' || c === 'isEstimate') {
           v = (v === true || v === 'TRUE' || v === 'true' || v === 1);
         }
-        if (c === 'date' || c === 'doneAt' || c === 'paidAt' || c === 'endDate') v = normalizeDate_(v);
-        if (c === 'prepayments') {
+        // 日期字串
+        if (c === 'date' || c === 'doneAt' || c === 'paidAt' || c === 'endDate') {
+          v = normalizeDate_(v);
+        }
+        // JSON 陣列
+        if (c === 'prepayments' || c === 'payments' || c === 'subtasks') {
           try { v = v ? JSON.parse(v) : []; } catch (_) { v = []; }
         }
+        // 預設字串/列舉
+        if (c === 'discountType' && (!v || v === '')) v = 'none';
         obj[c] = v;
       });
       return obj;
