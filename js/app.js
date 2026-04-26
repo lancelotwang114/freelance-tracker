@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.1';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.2';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -4299,8 +4299,9 @@ async function pullFromSheet(silent = false) {
       if (config.sheetConfig.cloudSchemaVersion > CURRENT_SCHEMA_VERSION) {
         showStaleClientBanner(config.sheetConfig.cloudSchemaVersion);
       }
-      // 雲端 appVersion 變了（別台 PC 推過新版）→ 也提示重整
-      if (data.meta.appVersion && data.meta.appVersion !== APP_VERSION) {
+      // 雲端 appVersion **比本地新**才警告（避免反向誤報）
+      // 字串比較對 "YYYY-MM-DD-vX.Y" 格式有效（lexicographic = chronological + semver）
+      if (data.meta.appVersion && data.meta.appVersion > APP_VERSION) {
         showStaleClientBanner(null, data.meta.appVersion);
       }
     }
