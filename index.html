@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.6">
+<meta name="app-version" content="2026-04-27-v2.7">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -215,6 +215,20 @@
       <h3>🔥 工作熱圖（最近 365 天）</h3>
       <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">每格代表一天的收款金額，顏色越深 = 那天越忙</p>
       <div id="rev-heatmap"></div>
+    </div>
+
+    <!-- v2.7: 忙閒週期 -->
+    <div class="card">
+      <h3>📅 忙閒週期分析</h3>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">過去全部歷史的月份分布與週幾分布</p>
+      <div id="rev-busy-cycle"></div>
+    </div>
+
+    <!-- v2.7: 時薪趨勢 -->
+    <div class="card">
+      <h3>💰 個人時薪趨勢</h3>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">統計有填工時的案件，計算每月平均時薪</p>
+      <div id="rev-hourly-trend"></div>
     </div>
 
     <div class="card">

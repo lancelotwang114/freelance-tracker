@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.6';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -1581,6 +1581,9 @@ function renderRevenue() {
   renderTagPie();
   renderHeatmap();
   renderMonthlyReport();
+  // v2.7
+  renderBusyCycle();
+  renderHourlyTrend();
 }
 
 function fillEmptyBuckets(keys, mode) {
@@ -2554,6 +2557,74 @@ async function showCloudCapacity() {
   }
 }
 
+// ============== 模糊比對（v2.7）==============
+// Levenshtein 距離（標準化到 0-1，1 = 完全一樣）
+function similarity(a, b) {
+  a = String(a || '').toLowerCase().trim();
+  b = String(b || '').toLowerCase().trim();
+  if (!a && !b) return 1;
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  // 簡化版 Levenshtein
+  const len1 = a.length, len2 = b.length;
+  const dp = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+  for (let i = 0; i <= len1; i++) dp[i][0] = i;
+  for (let j = 0; j <= len2; j++) dp[0][j] = j;
+  for (let i = 1; i <= len1; i++) {
+    for (let j = 1; j <= len2; j++) {
+      if (a[i-1] === b[j-1]) dp[i][j] = dp[i-1][j-1];
+      else dp[i][j] = 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return 1 - dp[len1][len2] / Math.max(len1, len2);
+}
+
+// 找出可能重複的業主
+function findFuzzyDupClients(threshold = 0.75) {
+  const cs = state.clients;
+  const dupes = [];
+  const seen = new Set();
+  for (let i = 0; i < cs.length; i++) {
+    for (let j = i + 1; j < cs.length; j++) {
+      const a = cs[i], b = cs[j];
+      const s = similarity(a.name, b.name);
+      if (s >= threshold && s < 1) {  // 完全一樣的另外處理
+        const key = [a.id, b.id].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        dupes.push({ a, b, similarity: +s.toFixed(2) });
+      }
+    }
+  }
+  return dupes.sort((x, y) => y.similarity - x.similarity);
+}
+
+// 找出可能重複的案件（同業主、同月、相似標題）
+function findFuzzyDupJobs(threshold = 0.85) {
+  const jobs = state.jobs.filter(j => !j.cancelled && !j.isEstimate);
+  // 按 業主+月份 分組
+  const groups = {};
+  jobs.forEach(j => {
+    const key = j.clientId + '|' + (j.date || '').slice(0, 7);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(j);
+  });
+  const dupes = [];
+  Object.values(groups).forEach(group => {
+    if (group.length < 2) return;
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i], b = group[j];
+        const s = similarity(a.title, b.title);
+        if (s >= threshold) {
+          dupes.push({ a, b, similarity: +s.toFixed(2) });
+        }
+      }
+    }
+  });
+  return dupes.sort((x, y) => y.similarity - x.similarity);
+}
+
 // ============== 資料健檢 ==============
 function runDataHealthCheck() {
   const results = [];
@@ -2637,6 +2708,32 @@ function runDataHealthCheck() {
     results.push({ severity: 'info', title: `${tooLarge.length} 筆案件 details 過長 (>5000 字)`, desc: '建議精簡' });
   }
 
+  // 7. v2.7: 模糊重複業主名（不完全相同但很相似）
+  const fuzzyClients = findFuzzyDupClients(0.75);
+  if (fuzzyClients.length) {
+    const samples = fuzzyClients.slice(0, 3).map(d => `${d.a.name} ↔ ${d.b.name} (${Math.round(d.similarity * 100)}%)`).join('\n');
+    results.push({
+      severity: 'info',
+      title: `${fuzzyClients.length} 組業主名相似可能重複`,
+      desc: samples + (fuzzyClients.length > 3 ? '\n…' : ''),
+    });
+  }
+
+  // 8. v2.7: 同月同業主相似標題的案件（可能重複）
+  const fuzzyJobs = findFuzzyDupJobs(0.85);
+  if (fuzzyJobs.length) {
+    const ids = new Set();
+    fuzzyJobs.forEach(d => { ids.add(d.a.id); ids.add(d.b.id); });
+    const samples = fuzzyJobs.slice(0, 3).map(d => `${d.a.title || '?'} ↔ ${d.b.title || '?'} (${Math.round(d.similarity * 100)}%)`).join('\n');
+    results.push({
+      severity: 'info',
+      title: `${fuzzyJobs.length} 組案件可能重複（同業主、同月、相似標題）`,
+      desc: samples + (fuzzyJobs.length > 3 ? '\n…' : ''),
+      jobIds: Array.from(ids),
+      action: { label: '查看', fn: () => { lockJobsToIds(Array.from(ids), `🔧 可能重複的案件（${fuzzyJobs.length} 組）`); switchTab('jobs'); } }
+    });
+  }
+
   return results;
 }
 
@@ -2654,7 +2751,7 @@ function showHealthCheckModal() {
     box.innerHTML = _healthCheckResults.map((r, i) => `
       <div style="padding: 10px; border-radius: 8px; background: var(--bg); margin-bottom: 8px; border-left: 3px solid ${colorMap[r.severity]};">
         <div style="font-weight: 600; font-size: 14px;">${iconMap[r.severity]} ${escapeHtml(r.title)}</div>
-        <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">${escapeHtml(r.desc)}</div>
+        <div style="font-size: 12px; color: var(--muted); margin-top: 4px; white-space: pre-line;">${escapeHtml(r.desc)}</div>
         ${r.action ? `<button class="btn btn-outline btn-sm" style="margin-top: 6px;" onclick="runHealthAction(${i})">${escapeHtml(r.action.label)}</button>` : ''}
       </div>
     `).join('');
@@ -2823,6 +2920,167 @@ async function exportInvoicePDF() {
   } catch (err) {
     toast('匯出失敗：' + err.message);
   }
+}
+
+// ============== v2.7: 忙閒週期分析 ==============
+function renderBusyCycle() {
+  const box = document.getElementById('rev-busy-cycle');
+  if (!box) return;
+  const jobs = activeJobs().filter(j => j.date);
+  if (jobs.length < 5) {
+    box.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--muted); font-size: 13px;">資料量不足（至少 5 筆有日期的案件）</div>';
+    return;
+  }
+
+  // 月份分布（1-12 月）
+  const byMonth = Array(12).fill(0);
+  const byMonthAmt = Array(12).fill(0);
+  // 週幾分布（0=週日 ~ 6=週六）
+  const byDow = Array(7).fill(0);
+  const byDowAmt = Array(7).fill(0);
+
+  jobs.forEach(j => {
+    const d = new Date(j.date);
+    if (isNaN(d)) return;
+    const m = d.getMonth();
+    const dow = d.getDay();
+    byMonth[m]++;
+    byDow[dow]++;
+    const amt = +j.amount || 0;
+    byMonthAmt[m] += amt;
+    byDowAmt[dow] += amt;
+  });
+
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const dowNames = ['週日','週一','週二','週三','週四','週五','週六'];
+  const maxMonth = Math.max(...byMonth, 1);
+  const maxDow = Math.max(...byDow, 1);
+
+  // 找出最忙月與最忙日
+  const peakMonthIdx = byMonth.indexOf(Math.max(...byMonth));
+  const slackMonthIdx = byMonth.indexOf(Math.min(...byMonth.filter(v => v > 0).length ? byMonth.map((v,i) => v === 0 ? Infinity : v) : byMonth));
+  const peakDowIdx = byDow.indexOf(Math.max(...byDow));
+
+  const monthBars = monthNames.map((n, i) => {
+    const h = Math.max(4, (byMonth[i] / maxMonth) * 100);
+    const isPeak = i === peakMonthIdx && byMonth[i] > 0;
+    return `<div style="flex:1; display:flex; flex-direction: column; align-items: center; gap: 2px;">
+      <div style="font-size: 10px; color: var(--muted);">${byMonth[i] || ''}</div>
+      <div style="height: ${h}px; width: 80%; background: ${isPeak ? 'var(--primary)' : 'var(--primary-light)'}; border-radius: 3px;"></div>
+      <div style="font-size: 11px; color: ${isPeak ? 'var(--primary)' : 'var(--text)'}; font-weight: ${isPeak?'600':'400'};">${n}</div>
+    </div>`;
+  }).join('');
+
+  const dowBars = dowNames.map((n, i) => {
+    const h = Math.max(4, (byDow[i] / maxDow) * 100);
+    const isPeak = i === peakDowIdx && byDow[i] > 0;
+    return `<div style="flex:1; display:flex; flex-direction: column; align-items: center; gap: 2px;">
+      <div style="font-size: 10px; color: var(--muted);">${byDow[i] || ''}</div>
+      <div style="height: ${h}px; width: 80%; background: ${isPeak ? 'var(--success)' : 'var(--success-light)'}; border-radius: 3px;"></div>
+      <div style="font-size: 11px; color: ${isPeak ? 'var(--success)' : 'var(--text)'}; font-weight: ${isPeak?'600':'400'};">${n}</div>
+    </div>`;
+  }).join('');
+
+  // 月份排序找出 Top3 與 Bottom3
+  const monthRanked = monthNames.map((n, i) => ({ n, i, count: byMonth[i], amt: byMonthAmt[i] })).sort((a,b) => b.count - a.count);
+  const top3 = monthRanked.slice(0, 3).filter(x => x.count > 0).map(x => x.n).join('、') || '—';
+  const bot3 = monthRanked.slice(-3).filter(x => x.count > 0).reverse().map(x => x.n).join('、') || '—';
+
+  box.innerHTML = `
+    <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">📈 月份分布（每月案件數）</div>
+    <div style="display: flex; gap: 4px; align-items: flex-end; height: 130px; margin-bottom: 16px;">${monthBars}</div>
+
+    <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">📅 週幾分布（每週幾接幾筆）</div>
+    <div style="display: flex; gap: 4px; align-items: flex-end; height: 130px; margin-bottom: 12px;">${dowBars}</div>
+
+    <div style="background: var(--bg); padding: 10px; border-radius: 8px; font-size: 13px; line-height: 1.7;">
+      <div>🔥 <b>最忙月份</b>：${top3}</div>
+      <div>😴 <b>最閒月份</b>：${bot3}</div>
+      <div>📅 <b>最常接案的週幾</b>：${dowNames[peakDowIdx]}（${byDow[peakDowIdx]} 筆）</div>
+    </div>
+  `;
+}
+
+// ============== v2.7: 個人時薪趨勢 ==============
+function renderHourlyTrend() {
+  const box = document.getElementById('rev-hourly-trend');
+  if (!box) return;
+  // 只看有填工時 + 有金額 + 有日期 + 沒取消 + 不是估價
+  const jobs = state.jobs.filter(j => !j.cancelled && !j.isEstimate && j.date && +j.amount > 0 && +j.hoursWorked > 0);
+  if (jobs.length < 3) {
+    box.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--muted); font-size: 13px;">
+      資料量不足（至少 3 筆有填工時的案件）<br>
+      <span style="font-size: 11px;">在案件 modal 填「工時」欄位即可累積資料</span>
+    </div>`;
+    return;
+  }
+
+  // 按月分組
+  const byMonth = {};
+  jobs.forEach(j => {
+    const m = getMonth(j.date);
+    if (!byMonth[m]) byMonth[m] = { totalAmt: 0, totalHrs: 0, count: 0 };
+    byMonth[m].totalAmt += +j.amount;
+    byMonth[m].totalHrs += +j.hoursWorked;
+    byMonth[m].count++;
+  });
+
+  const months = Object.keys(byMonth).sort();
+  const recent = months.slice(-12);  // 最近 12 個月
+  const rates = recent.map(m => {
+    const s = byMonth[m];
+    return { month: m, rate: s.totalAmt / s.totalHrs, count: s.count };
+  });
+
+  if (rates.length < 2) {
+    box.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--muted); font-size: 13px;">資料分布太集中（同一個月份）</div>`;
+    return;
+  }
+
+  const maxRate = Math.max(...rates.map(r => r.rate));
+  const minRate = Math.min(...rates.map(r => r.rate));
+  const avg = rates.reduce((s,r) => s + r.rate, 0) / rates.length;
+
+  const bars = rates.map(r => {
+    const pct = (r.rate / maxRate) * 100;
+    const colorClass = r.rate > avg * 1.1 ? 'var(--success)' : (r.rate < avg * 0.9 ? 'var(--warning)' : 'var(--primary)');
+    return `<div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+      <div style="font-size: 10px; color: var(--muted);">${Math.round(r.rate).toLocaleString()}</div>
+      <div style="height: ${pct * 1.4}px; width: 70%; background: ${colorClass}; border-radius: 3px;" title="${r.month}: NT$ ${Math.round(r.rate)}/hr （${r.count} 筆）"></div>
+      <div style="font-size: 10px; color: var(--muted); white-space: nowrap;">${r.month.slice(2)}</div>
+    </div>`;
+  }).join('');
+
+  // 整體統計
+  const totalAmt = jobs.reduce((s,j) => s + (+j.amount || 0), 0);
+  const totalHrs = jobs.reduce((s,j) => s + (+j.hoursWorked || 0), 0);
+  const overallAvg = totalAmt / totalHrs;
+  const trend = rates.length >= 6
+    ? (rates.slice(-3).reduce((s,r)=>s+r.rate,0)/3) - (rates.slice(-6,-3).reduce((s,r)=>s+r.rate,0)/3)
+    : 0;
+  const trendIcon = trend > overallAvg * 0.05 ? '📈 上升' : (trend < -overallAvg * 0.05 ? '📉 下滑' : '➡️ 持平');
+
+  box.innerHTML = `
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px;">
+      <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+        <div style="font-size: 11px; color: var(--muted);">整體平均時薪</div>
+        <div style="font-size: 18px; font-weight: 700; color: var(--primary);">NT$ ${Math.round(overallAvg).toLocaleString()}/hr</div>
+      </div>
+      <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+        <div style="font-size: 11px; color: var(--muted);">累計工時</div>
+        <div style="font-size: 18px; font-weight: 700;">${Math.round(totalHrs).toLocaleString()} 小時</div>
+      </div>
+      <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+        <div style="font-size: 11px; color: var(--muted);">趨勢（近 3 月 vs 前 3 月）</div>
+        <div style="font-size: 16px; font-weight: 600;">${trendIcon}</div>
+      </div>
+    </div>
+    <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">最近 ${rates.length} 個月每月平均時薪</div>
+    <div style="display: flex; gap: 4px; align-items: flex-end; height: 160px;">${bars}</div>
+    <div style="font-size: 11px; color: var(--muted); margin-top: 6px;">
+      綠色 = 高於平均 10%；橘色 = 低於平均 10%；藍色 = 接近平均
+    </div>
+  `;
 }
 
 // ============== Invoice Tab ==============
