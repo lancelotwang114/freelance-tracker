@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.4';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.5';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -441,6 +441,76 @@ function clearJobsLock() {
   state.filters.jobIdsOnly = null;
   state.filters.jobIdsOnlyLabel = '';
   render();
+}
+
+// v2.5: 業主健康度指標
+function computeClientHealth(clientId) {
+  const c = state.clients.find(x => x.id === clientId);
+  if (!c) return null;
+  const jobs = state.jobs.filter(j => j.clientId === clientId && !j.cancelled);
+
+  // 1. 平均收款週期
+  let cycleSum = 0, cycleCount = 0;
+  jobs.forEach(j => {
+    if (j.doneAt && j.paidAt) {
+      const d = daysBetween(j.doneAt, j.paidAt);
+      if (d >= 0 && d <= 365) { cycleSum += d; cycleCount++; }
+    }
+  });
+  const avgPayCycle = cycleCount > 0 ? Math.round(cycleSum / cycleCount) : null;
+
+  // 2. 最近活動：最後一筆有日期的案件
+  const dated = jobs.filter(j => j.date).sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  const lastJobDate = dated[0]?.date || null;
+  const daysSinceLastJob = lastJobDate ? daysBetween(lastJobDate, todayStr()) : null;
+
+  // 3. 單價趨勢：最近 6 個月 vs 之前 6 個月平均
+  const now = new Date();
+  const sixMoAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+  const twelveMoAgo = new Date(now.getFullYear(), now.getMonth() - 12, 1);
+  const recent = [], prev = [];
+  jobs.forEach(j => {
+    if (!j.date || !(+j.amount)) return;
+    const d = new Date(j.date);
+    if (d >= sixMoAgo) recent.push(+j.amount);
+    else if (d >= twelveMoAgo) prev.push(+j.amount);
+  });
+  const recentAvg = recent.length ? Math.round(recent.reduce((a,b)=>a+b,0) / recent.length) : 0;
+  const prevAvg = prev.length ? Math.round(prev.reduce((a,b)=>a+b,0) / prev.length) : 0;
+  let trend = 'flat';
+  if (prevAvg > 0 && recent.length >= 2) {
+    const change = (recentAvg - prevAvg) / prevAvg;
+    if (change > 0.15) trend = 'up';
+    else if (change < -0.15) trend = 'down';
+  }
+
+  // 4. 計分：100 起扣
+  let score = 100;
+  // 流失：> 90 天沒接案 -30 / > 180 天 -50
+  if (daysSinceLastJob !== null) {
+    if (daysSinceLastJob > 180) score -= 50;
+    else if (daysSinceLastJob > 90) score -= 30;
+    else if (daysSinceLastJob > 60) score -= 15;
+  } else {
+    score -= 20;  // 完全沒接過
+  }
+  // 拖款：平均 > 60 天 -25 / > 30 天 -10
+  if (avgPayCycle !== null) {
+    if (avgPayCycle > 60) score -= 25;
+    else if (avgPayCycle > 30) score -= 10;
+  }
+  // 單價：跌 -15 / 升 +5
+  if (trend === 'down') score -= 15;
+  if (trend === 'up') score += 5;
+
+  score = Math.max(0, Math.min(100, score));
+
+  let label, color;
+  if (score >= 75) { label = '健康'; color = 'var(--success)'; }
+  else if (score >= 50) { label = '注意'; color = 'var(--warning)'; }
+  else { label = '流失中'; color = 'var(--danger)'; }
+
+  return { score, label, color, avgPayCycle, daysSinceLastJob, trend, recentAvg, prevAvg, lastJobDate };
 }
 
 // v2.2 智慧待收款：依各業主的歷史平均收款週期判斷異常
@@ -1212,11 +1282,36 @@ function renderClients() {
     const isExpanded = expandedClients.has(c.id);
     const expandIcon = isExpanded ? '▼' : '▶';
 
-    // 展開時顯示該業主的案件清單（最近 50 筆）
+    // v2.5: 健康度指標
+    const health = computeClientHealth(c.id);
+    const healthBadge = health
+      ? `<span class="prepaid-badge" style="background: ${health.color}22; color: ${health.color};" title="健康度 ${health.score}/100">🩺 ${health.label}</span>`
+      : '';
+
+    // 展開時顯示該業主的健康度詳情 + 案件清單（最近 50 筆）
     let expandedJobsHtml = '';
     if (isExpanded) {
+      const h = health;
+      const trendIcon = h.trend === 'up' ? '📈 上升' : h.trend === 'down' ? '📉 下滑' : '➡️ 持平';
+      const lastJobText = h.daysSinceLastJob === null ? '從未接過' :
+                          h.daysSinceLastJob > 90 ? `${h.daysSinceLastJob} 天 ⚠️ 可能流失` :
+                          `${h.daysSinceLastJob} 天前`;
+      const cycleText = h.avgPayCycle === null ? '未知（無歷史收款資料）' :
+                        h.avgPayCycle > 60 ? `${h.avgPayCycle} 天 🐢 偏慢` :
+                        h.avgPayCycle > 30 ? `${h.avgPayCycle} 天` :
+                        `${h.avgPayCycle} 天 🚀 很快`;
+      const trendText = h.recentAvg
+        ? `${trendIcon}（近 6 月平均 ${fmt(h.recentAvg)}${h.prevAvg ? `／前 6 月 ${fmt(h.prevAvg)}` : ''}）`
+        : trendIcon;
+      expandedJobsHtml = `<div style="margin-top: 10px; padding: 12px; background: var(--bg); border-radius: 8px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border);">
+          <div><div style="font-size: 11px; color: var(--muted);">健康度</div><div style="font-size: 16px; font-weight: 700; color: ${h.color};">${h.score}/100 · ${h.label}</div></div>
+          <div><div style="font-size: 11px; color: var(--muted);">最後接案</div><div style="font-size: 13px;">${lastJobText}</div></div>
+          <div><div style="font-size: 11px; color: var(--muted);">平均收款週期</div><div style="font-size: 13px;">${cycleText}</div></div>
+          <div><div style="font-size: 11px; color: var(--muted);">單價趨勢</div><div style="font-size: 13px;">${trendText}</div></div>
+        </div>`;
       const recent = clientJobs.slice().sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0, 50);
-      expandedJobsHtml = `<div style="margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 8px;">
+      expandedJobsHtml += `
         <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">
           最近 ${recent.length} 筆（共 ${clientJobs.length} 筆）
         </div>
@@ -1242,6 +1337,7 @@ function renderClients() {
         <div class="dot" style="background:${c.color}; width: 12px; height: 12px;"></div>
         <div style="font-weight: 600; flex: 1;">
           ${escapeHtml(c.name)}
+          ${healthBadge}
           ${balanceBadge}
           ${allUnpaid > 0 && !c.prepaidMode ? `<span class="client-owes">待收 ${fmt(allUnpaid)}</span>` : ''}
           ${commissionInfo}
@@ -2044,6 +2140,147 @@ function clickClientRank(cid) {
   }
   lockJobsToIds(cache.jobIds, `${cache.name} · ${rangeLabel}（${cache.count} 筆）`);
   switchTab('jobs');
+}
+
+// ============== iCal 訂閱（v2.5）==============
+function getIcalUrl() {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken) return null;
+  return cfg.apiUrl + '?action=ical&token=' + encodeURIComponent(cfg.apiToken);
+}
+
+async function copyIcalUrl() {
+  const url = getIcalUrl();
+  if (!url) { toast('請先設定雲端同步'); return; }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('✓ 已複製訂閱連結到剪貼簿', 4000);
+  } catch (err) {
+    // fallback
+    prompt('複製此連結（Ctrl+C / Cmd+C）：', url);
+  }
+}
+
+function showIcalHelp() {
+  const url = getIcalUrl();
+  const msg = [
+    '📅 將案件截止日加入行事曆',
+    '',
+    '【Google Calendar (網頁)】',
+    '1. 左側「其他日曆」旁的 + 號',
+    '2. 選「以網址加入」',
+    '3. 貼上訂閱連結 → 加入',
+    '',
+    '【iPhone / iPad】',
+    '1. 設定 → 行事曆 → 帳號 → 新增帳號',
+    '2. 其他 → 新增訂閱式行事曆',
+    '3. 伺服器：貼上訂閱連結',
+    '',
+    '【macOS 行事曆】',
+    '1. 檔案 → 新增行事曆訂閱',
+    '2. 貼上連結',
+    '',
+    '訂閱後行事曆會每 15-60 分鐘自動更新（依 APP 而定）。',
+    '截止日會顯示為全天事件，提前 1 天有提醒。'
+  ].join('\n');
+  alert(msg);
+}
+
+// ============== 瀏覽器原生通知（v2.5）==============
+const NOTIF_ENABLED_KEY = 'ftNotifEnabled_v1';
+const NOTIF_LAST_FIRED_KEY = 'ftNotifLastFired_v1';
+
+function notifSupported() {
+  return 'Notification' in window;
+}
+
+async function requestNotifPermission() {
+  if (!notifSupported()) { toast('此瀏覽器不支援通知'); return; }
+  if (Notification.permission === 'granted') {
+    localStorage.setItem(NOTIF_ENABLED_KEY, '1');
+    toast('✓ 通知已啟用');
+    sendTestNotification();
+    updateNotifUI();
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    localStorage.setItem(NOTIF_ENABLED_KEY, '1');
+    toast('✓ 通知已啟用');
+    sendTestNotification();
+  } else if (perm === 'denied') {
+    toast('❌ 已拒絕。要重新啟用須到瀏覽器設定打開', 5000);
+  }
+  updateNotifUI();
+}
+
+function disableNotif() {
+  localStorage.setItem(NOTIF_ENABLED_KEY, '0');
+  toast('已停用通知');
+  updateNotifUI();
+}
+
+function isNotifEnabled() {
+  return notifSupported() &&
+         Notification.permission === 'granted' &&
+         localStorage.getItem(NOTIF_ENABLED_KEY) === '1';
+}
+
+function sendTestNotification() {
+  if (!isNotifEnabled()) return;
+  new Notification('外包收益管理', {
+    body: '✓ 通知已啟用！截止日、拖款警告會即時跳出。',
+    icon: 'icons/icon.svg',
+    tag: 'ftracker-test'
+  });
+}
+
+// 開頁時掃一次：把 alert 推成系統通知（一天一次，避免狂跳）
+function maybeFireNotifications() {
+  if (!isNotifEnabled()) return;
+  const today = todayStr();
+  const lastFired = localStorage.getItem(NOTIF_LAST_FIRED_KEY);
+  if (lastFired === today) return;  // 今天已通知過
+  const alerts = computeAlerts();
+  const important = alerts.filter(a => ['overdue', 'due-soon', 'unpaid-long', 'slow-pay'].includes(a.type));
+  if (!important.length) return;
+  // 統整成一則
+  const top = important[0];
+  const more = important.length > 1 ? `（還有 ${important.length - 1} 項）` : '';
+  const body = important.map(a => `${a.icon} ${a.title}`).join('\n').slice(0, 200);
+  const n = new Notification(top.title + more, {
+    body,
+    icon: 'icons/icon.svg',
+    tag: 'ftracker-daily',
+    requireInteraction: false
+  });
+  n.onclick = () => {
+    window.focus();
+    switchTab('dashboard');
+    n.close();
+  };
+  localStorage.setItem(NOTIF_LAST_FIRED_KEY, today);
+}
+
+function updateNotifUI() {
+  const status = document.getElementById('notif-status');
+  const enableBtn = document.getElementById('notif-enable-btn');
+  const disableBtn = document.getElementById('notif-disable-btn');
+  if (!status) return;
+  if (!notifSupported()) {
+    status.textContent = '❌ 此瀏覽器不支援';
+    if (enableBtn) enableBtn.disabled = true;
+  } else if (Notification.permission === 'denied') {
+    status.textContent = '🚫 已被瀏覽器拒絕（要從瀏覽器設定重新允許）';
+  } else if (isNotifEnabled()) {
+    status.textContent = '✅ 已啟用';
+    enableBtn?.classList.add('hidden');
+    disableBtn?.classList.remove('hidden');
+  } else {
+    status.textContent = '⏸ 未啟用';
+    enableBtn?.classList.remove('hidden');
+    disableBtn?.classList.add('hidden');
+  }
 }
 
 // ============== 雲端容量監控 ==============
@@ -4839,6 +5076,9 @@ function maybeGenerateMonthlySnapshot() {
 // v2.2: 啟動時套用主題 + Lab Mode UI
 loadThemeUI();
 updateLabModeUI();
+updateNotifUI();
+// v2.5: 開頁掃一次推通知（一天一次）
+setTimeout(maybeFireNotifications, 4000);
 
 // 啟動時若同步已啟用，自動從 Sheet 拉取最新資料
 if (config.sheetSyncEnabled && config.sheetConfig?.apiUrl && config.sheetConfig?.apiToken) {

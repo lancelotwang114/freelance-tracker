@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.4">
+<meta name="app-version" content="2026-04-27-v2.5">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -276,6 +276,47 @@
 
     <!-- ============== 一般設定 ============== -->
     <div class="settings-section-title">🌟 常用設定</div>
+
+    <!-- 通知與訂閱 -->
+    <div class="card collapsible collapsed" id="card-notify">
+      <div class="card-head" onclick="toggleCard('card-notify')">
+        <h3>🔔 通知與訂閱</h3>
+        <span class="card-status">桌面通知 / iCal 訂閱</span>
+        <span class="toggle-arrow">▼</span>
+      </div>
+      <div class="card-body">
+
+        <!-- 瀏覽器原生通知 -->
+        <div style="margin-bottom: 16px;">
+          <label style="font-size: 13px; font-weight: 600;">🖥️ 瀏覽器桌面通知</label>
+          <p style="font-size: 12px; color: var(--muted); margin: 2px 0 6px;">
+            開啟後，每天首次開頁時若有逾期、即將到期、拖款的案件，會跳系統通知。<br>
+            ⚠️ 僅在 APP 開啟時運作；若 PWA 安裝到桌面，效果類似原生 APP。
+          </p>
+          <div id="notif-status" style="font-size: 13px; padding: 6px 10px; background: var(--bg); border-radius: 6px; margin-bottom: 6px;"></div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-primary btn-sm" id="notif-enable-btn" onclick="requestNotifPermission()">啟用通知</button>
+            <button class="btn btn-outline btn-sm hidden" id="notif-disable-btn" onclick="disableNotif()">停用通知</button>
+            <button class="btn btn-ghost btn-sm" onclick="sendTestNotification()">🧪 試發一則</button>
+          </div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <!-- iCal 訂閱 -->
+        <div>
+          <label style="font-size: 13px; font-weight: 600;">📅 iCal 行事曆訂閱</label>
+          <p style="font-size: 12px; color: var(--muted); margin: 2px 0 6px;">
+            把案件截止日輸出成標準 iCal 連結，加進 Google Calendar / iPhone 行事曆 → 截止日自動同步顯示，不用打開這個 APP 也會跳提醒（提前 1 天）。<br>
+            ⚠️ 連結含 token，請勿外流。已收款 / 已取消的案件不會出現。
+          </p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-primary btn-sm" onclick="copyIcalUrl()">📋 複製訂閱連結</button>
+            <button class="btn btn-outline btn-sm" onclick="showIcalHelp()">❓ 加入步驟</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 主題（暗色模式）-->
     <div class="card collapsible collapsed" id="card-theme">

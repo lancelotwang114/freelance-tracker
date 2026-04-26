@@ -109,6 +109,12 @@ function handle_(e, method) {
         return json_({ ok: true, lock: getLockStatus_() });
       case 'forceReleaseLock':
         return json_({ ok: true, result: releaseLock_(null, true) });
+      case 'icalendar':
+      case 'ical':
+        // 直接回純文字 iCal 格式，多數行事曆客戶端會以內容判斷格式
+        return ContentService
+          .createTextOutput(buildICalendar_())
+          .setMimeType(ContentService.MimeType.TEXT);
       case 'testCalendar':
         return json_({ ok: true, result: testCalendar_(params.calendarId) });
       case 'syncCalendar':
@@ -801,6 +807,85 @@ function restoreSnapshot_(snapshotId, deviceLabel) {
     clientCount: (data.clients || []).length,
     jobCount: (data.jobs || []).length
   };
+}
+
+// ============== iCal 訂閱輸出（v2.5）==============
+/**
+ * 把所有未取消的案件轉成 iCal VCALENDAR 字串，供 Google Calendar / iPhone 訂閱。
+ * 訂閱後行事曆會自動每 15-30 分鐘拉一次更新（各家客戶端不同）。
+ *
+ * 規則：
+ *   - 截止日（endDate）→ 全天事件，提前 1 天提醒
+ *   - 沒 endDate 的用 date（執行日）
+ *   - 已收款的案件不出現（已結束）
+ *   - 已取消的不出現
+ */
+function buildICalendar_() {
+  const data = readAll_();
+  const jobs = (data.jobs || []).filter(j => !j.cancelled && !j.paid && (j.date || j.endDate));
+  const clientMap = {};
+  (data.clients || []).forEach(c => clientMap[c.id] = c);
+
+  const tz = Session.getScriptTimeZone();
+  const now = Utilities.formatDate(new Date(), tz, 'yyyyMMdd\'T\'HHmmss');
+
+  function escapeIcal(s) {
+    return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  }
+  function fmtDate(s) {
+    // YYYY-MM-DD → YYYYMMDD
+    return String(s || '').replace(/-/g, '').slice(0, 8);
+  }
+
+  let ics = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//FreelanceTracker//ZH-TW//',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'X-WR-CALNAME:外包案件截止日',
+    'X-WR-TIMEZONE:' + tz,
+    'X-WR-CALDESC:Freelance Tracker 自動產生'
+  ];
+
+  jobs.forEach(j => {
+    const c = clientMap[j.clientId];
+    const cname = c ? c.name : '?';
+    const due = j.endDate || j.date;
+    if (!due) return;
+    const dt = fmtDate(due);
+    const tomorrow = new Date(due + 'T00:00:00');
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const dtEnd = Utilities.formatDate(tomorrow, tz, 'yyyyMMdd');
+    const summary = `${j.done ? '✓ ' : ''}${cname}：${j.title || '(無標題)'}`;
+    const desc = [
+      `業主：${cname}`,
+      `金額：NT$ ${(+j.amount || 0).toLocaleString()}`,
+      j.tag ? `類型：${j.tag}` : null,
+      j.details ? `說明：${j.details}` : null,
+      j.done ? '狀態：已完成' : '狀態：進行中',
+      j.endDate && j.date && j.endDate !== j.date ? `執行日：${j.date}` : null
+    ].filter(Boolean).join('\\n');
+
+    ics.push('BEGIN:VEVENT');
+    ics.push('UID:job-' + j.id + '@freelance-tracker');
+    ics.push('DTSTAMP:' + now);
+    ics.push('DTSTART;VALUE=DATE:' + dt);
+    ics.push('DTEND;VALUE=DATE:' + dtEnd);
+    ics.push('SUMMARY:' + escapeIcal(summary));
+    ics.push('DESCRIPTION:' + escapeIcal(desc));
+    if (c && c.color) ics.push('COLOR:' + c.color);
+    // 提前 1 天提醒（08:00）
+    ics.push('BEGIN:VALARM');
+    ics.push('ACTION:DISPLAY');
+    ics.push('DESCRIPTION:' + escapeIcal('明天截止：' + summary));
+    ics.push('TRIGGER:-PT16H');
+    ics.push('END:VALARM');
+    ics.push('END:VEVENT');
+  });
+
+  ics.push('END:VCALENDAR');
+  return ics.join('\r\n');
 }
 
 // ============== Google Calendar 同步 ==============
