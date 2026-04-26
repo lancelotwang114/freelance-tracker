@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.8';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.9.9';   // 與 index.html 的 meta 同步
 
 // ============== 操作日誌（v2.9.5）==============
 const ACTION_LOG_KEY = 'ftActionLog_v1';
@@ -6400,8 +6400,9 @@ async function hardReload() {
 function updateVersionBadge() {
   const el = document.getElementById('app-version-badge');
   if (!el) return;
-  const local = APP_VERSION.replace(/^\d{4}-\d{2}-\d{2}-/, '');  // 只顯示 vX.Y.Z 部分
-  if (serverAppVersion && serverAppVersion !== APP_VERSION) {
+  const local = APP_VERSION.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+  // v2.9.9: 只在伺服器版本「比本地新」才顯示更新提示
+  if (serverAppVersion && serverAppVersion > APP_VERSION) {
     const remote = serverAppVersion.replace(/^\d{4}-\d{2}-\d{2}-/, '');
     el.innerHTML = `${local} · <span style="color: var(--warning); font-weight: 600;">🆕 ${remote} 點此更新</span>`;
     el.style.cursor = 'pointer';
@@ -6430,9 +6431,10 @@ async function pollAppVersion() {
     const html = await resp.text();
     const match = html.match(/<meta name="app-version" content="([^"]+)"/);
     if (!match) return;
-    serverAppVersion = match[1];  // v2.7.5: 提供給 UI badge 用
+    serverAppVersion = match[1];
     updateVersionBadge();
-    if (serverAppVersion !== APP_VERSION) {
+    // v2.9.9: 只在伺服器比本地新才提示（避免本地剛升版、CDN 還在更新時誤報）
+    if (serverAppVersion > APP_VERSION) {
       const remind = document.getElementById('version-remind');
       if (!remind) {
         const div = document.createElement('div');
@@ -6441,6 +6443,9 @@ async function pollAppVersion() {
         div.innerHTML = `🆕 APP 有新版本（${serverAppVersion}），<a onclick="hardReload()" style="color:#fff;text-decoration:underline;cursor:pointer;">點此強制更新</a>`;
         document.body.appendChild(div);
       }
+    } else {
+      // 本地 >= 伺服器 → 移除可能殘留的橫幅
+      document.getElementById('version-remind')?.remove();
     }
   } catch (err) {
     // 靜默失敗
