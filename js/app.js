@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.8';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.9';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -15,7 +15,16 @@ let state = {
 };
 
 let config = {
-  unpaidRemindDays: 7,  // 完成超過幾天未收款就提醒（App 內 + LINE 共用）
+  // 全域提醒參數（v2.7.9 起每個都個別可調，業主層級可覆寫 unpaidRemindDays）
+  unpaidRemindDays: 7,           // 完成超過幾天未收款就提醒（全域預設）
+  dueSoonDays: 3,                // 「即將到期」前幾天就提醒
+  monthEndReminderDay: 25,       // 從每月第幾天開始顯示「月底提醒」
+  enableOverdueAlert: true,      // 是否啟用「逾期未完成」提醒
+  enableDueSoonAlert: true,      // 是否啟用「即將到期」提醒
+  enableUnpaidLongAlert: true,   // 是否啟用「完成超過 N 天未收款」提醒
+  enableMonthEndAlert: true,     // 是否啟用「月底提醒」
+  enableBillingDayAlert: true,   // 是否啟用「業主固定請款日」提醒
+  enableSlowPayAlert: true,      // 是否啟用「智慧拖款警告」
 
   // 我的資料（顯示在請款單）
   userInfo: {
@@ -76,7 +85,7 @@ let revenueState = {
 
 // ============== Schema 版本化框架（v2.1+）==============
 // 每升一版資料模型就 +1，並新增對應的 migration 函式
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 const SCHEMA_MIGRATIONS = {
   // v1 → v2：加入 paid/doneAt/paidAt 欄位
@@ -118,6 +127,15 @@ const SCHEMA_MIGRATIONS = {
       isEstimate: j.isEstimate ?? false,    // 草稿/估價單模式
       subtasks: j.subtasks ?? [],            // [{id, text, done}]
       timeSpentMs: j.timeSpentMs ?? 0        // 計時器累計毫秒
+    }));
+  },
+  // v5 → v6：業主固定請款日 + 個別覆寫提醒天數（v2.7.9 新增）
+  5: function(state) {
+    state.clients = (state.clients || []).map(c => ({
+      ...c,
+      billingDay: c.billingDay ?? 0,                       // 0 = 不固定 / 1-31 = 該月第幾天
+      billingRemindDays: c.billingRemindDays ?? 3,         // 提前幾天提醒
+      unpaidRemindDaysOverride: c.unpaidRemindDaysOverride ?? null  // null = 走全域設定
     }));
   }
 };
@@ -196,12 +214,35 @@ function save() {
 }
 
 function saveConfig() {
-  const days = +document.getElementById('cfg-unpaid-days-input').value || 7;
-  config.unpaidRemindDays = Math.max(1, Math.min(60, days));
-  document.getElementById('cfg-unpaid-days').textContent = config.unpaidRemindDays;
+  const g = (id) => document.getElementById(id);
+  config.unpaidRemindDays = Math.max(1, Math.min(120, +g('cfg-unpaid-days-input').value || 7));
+  config.dueSoonDays = Math.max(1, Math.min(30, +g('cfg-due-soon-days')?.value || 3));
+  config.monthEndReminderDay = Math.max(20, Math.min(31, +g('cfg-month-end-day')?.value || 25));
+  config.backupRemindDays = Math.max(1, Math.min(90, +g('cfg-backup-days-input')?.value || 14));
+  config.enableOverdueAlert = g('cfg-alert-overdue')?.checked !== false;
+  config.enableDueSoonAlert = g('cfg-alert-due-soon')?.checked !== false;
+  config.enableUnpaidLongAlert = g('cfg-alert-unpaid-long')?.checked !== false;
+  config.enableMonthEndAlert = g('cfg-alert-month-end')?.checked !== false;
+  config.enableBillingDayAlert = g('cfg-alert-billing-day')?.checked !== false;
+  config.enableSlowPayAlert = g('cfg-alert-slow-pay')?.checked !== false;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   render();
   toast('✓ 已儲存設定');
+}
+
+// 載入提醒設定 UI
+function loadReminderConfigUI() {
+  const g = (id) => document.getElementById(id);
+  if (g('cfg-unpaid-days-input')) g('cfg-unpaid-days-input').value = config.unpaidRemindDays || 7;
+  if (g('cfg-due-soon-days')) g('cfg-due-soon-days').value = config.dueSoonDays || 3;
+  if (g('cfg-month-end-day')) g('cfg-month-end-day').value = config.monthEndReminderDay || 25;
+  if (g('cfg-backup-days-input')) g('cfg-backup-days-input').value = config.backupRemindDays || 14;
+  if (g('cfg-alert-overdue')) g('cfg-alert-overdue').checked = config.enableOverdueAlert !== false;
+  if (g('cfg-alert-due-soon')) g('cfg-alert-due-soon').checked = config.enableDueSoonAlert !== false;
+  if (g('cfg-alert-unpaid-long')) g('cfg-alert-unpaid-long').checked = config.enableUnpaidLongAlert !== false;
+  if (g('cfg-alert-month-end')) g('cfg-alert-month-end').checked = config.enableMonthEndAlert !== false;
+  if (g('cfg-alert-billing-day')) g('cfg-alert-billing-day').checked = config.enableBillingDayAlert !== false;
+  if (g('cfg-alert-slow-pay')) g('cfg-alert-slow-pay').checked = config.enableSlowPayAlert !== false;
 }
 
 // ============== Utilities ==============
@@ -559,72 +600,121 @@ function computeSlowPayJobs(active) {
 
 function computeAlerts() {
   const today = todayStr();
-  const in3 = addDays(new Date(), 3);
+  const in3 = addDays(new Date(), config.dueSoonDays || 3);
   const alerts = [];
   const active = activeJobs();  // 排除取消的案件
 
   // 1. 逾期未完成
-  const overdue = active.filter(j => !j.done && j.date && j.date < today);
-  if (overdue.length) {
-    const amt = overdue.reduce((s,j) => s + (+j.amount||0), 0);
-    alerts.push({
-      type: 'overdue',
-      icon: '🔴',
-      title: `${overdue.length} 筆逾期未完成`,
-      desc: `最早日期 ${overdue.map(j=>j.date).sort()[0]}　涉及金額 ${fmt(amt)}`,
-      onClick: () => { lockJobsToIds(overdue.map(j=>j.id), `🔴 逾期未完成（${overdue.length} 筆）`); switchTab('jobs'); }
-    });
-  }
-
-  // 2. 未來 3 天內到期（含今天）
-  const dueSoon = active.filter(j => !j.done && j.date && j.date >= today && j.date <= in3);
-  if (dueSoon.length) {
-    alerts.push({
-      type: 'due-soon',
-      icon: '🟡',
-      title: `${dueSoon.length} 筆即將到期`,
-      desc: `未來 3 天內要交件：${dueSoon.slice(0,2).map(j=>j.title).join('、')}${dueSoon.length>2?'…':''}`,
-      onClick: () => { lockJobsToIds(dueSoon.map(j=>j.id), `🟡 未來 3 天到期（${dueSoon.length} 筆）`); switchTab('jobs'); }
-    });
-  }
-
-  // 3. 已完成但超過 N 天未收款
-  const threshold = addDays(new Date(), -config.unpaidRemindDays);
-  const unpaidLong = active.filter(j => j.done && !j.paid && j.doneAt && j.doneAt <= threshold);
-  if (unpaidLong.length) {
-    const amt = unpaidLong.reduce((s,j) => s + (+j.amount||0), 0);
-    // 依業主分組
-    const byClient = {};
-    unpaidLong.forEach(j => {
-      const c = getClient(j.clientId);
-      const name = c ? c.name : '未指定';
-      byClient[name] = (byClient[name]||0) + (+j.amount||0);
-    });
-    const clientsStr = Object.entries(byClient).map(([n,a]) => `${n} ${fmt(a)}`).join('、');
-    alerts.push({
-      type: 'unpaid-long',
-      icon: '🟠',
-      title: `${unpaidLong.length} 筆完成超過 ${config.unpaidRemindDays} 天未收款`,
-      desc: clientsStr,
-      amt: fmt(amt),
-      onClick: () => { lockJobsToIds(unpaidLong.map(j=>j.id), `🟠 完成超過 ${config.unpaidRemindDays} 天未收款（${unpaidLong.length} 筆）`); switchTab('jobs'); }
-    });
-  }
-
-  // 4. 月底提醒（每月 25 號後 + 有未收款的本月案件）
-  const dom = new Date().getDate();
-  if (dom >= 25) {
-    const thisMonthUnpaid = active.filter(j => j.done && !j.paid && getMonth(j.date) === thisMonth());
-    if (thisMonthUnpaid.length) {
-      const amt = thisMonthUnpaid.reduce((s,j) => s + (+j.amount||0), 0);
+  if (config.enableOverdueAlert !== false) {
+    const overdue = active.filter(j => !j.done && j.date && j.date < today);
+    if (overdue.length) {
+      const amt = overdue.reduce((s,j) => s + (+j.amount||0), 0);
       alerts.push({
-        type: 'month-end',
-        icon: '📅',
-        title: `月底將至，本月有 ${thisMonthUnpaid.length} 筆可請款`,
-        desc: `可產生請款單寄給業主　共 ${fmt(amt)}`,
-        onClick: () => { lockJobsToIds(thisMonthUnpaid.map(j=>j.id), `📅 本月可請款（${thisMonthUnpaid.length} 筆）`); switchTab('jobs'); }
+        type: 'overdue',
+        icon: '🔴',
+        title: `${overdue.length} 筆逾期未完成`,
+        desc: `最早日期 ${overdue.map(j=>j.date).sort()[0]}　涉及金額 ${fmt(amt)}`,
+        onClick: () => { lockJobsToIds(overdue.map(j=>j.id), `🔴 逾期未完成（${overdue.length} 筆）`); switchTab('jobs'); }
       });
     }
+  }
+
+  // 2. 未來 N 天內到期（含今天）
+  if (config.enableDueSoonAlert !== false) {
+    const days = config.dueSoonDays || 3;
+    const dueSoon = active.filter(j => !j.done && j.date && j.date >= today && j.date <= in3);
+    if (dueSoon.length) {
+      alerts.push({
+        type: 'due-soon',
+        icon: '🟡',
+        title: `${dueSoon.length} 筆即將到期`,
+        desc: `未來 ${days} 天內要交件：${dueSoon.slice(0,2).map(j=>j.title).join('、')}${dueSoon.length>2?'…':''}`,
+        onClick: () => { lockJobsToIds(dueSoon.map(j=>j.id), `🟡 未來 ${days} 天到期（${dueSoon.length} 筆）`); switchTab('jobs'); }
+      });
+    }
+  }
+
+  // 3. 已完成但超過 N 天未收款（每筆 job 用該業主的設定，沒設則用全域）
+  if (config.enableUnpaidLongAlert !== false) {
+    const unpaidLong = active.filter(j => {
+      if (!j.done || j.paid || !j.doneAt) return false;
+      const c = getClient(j.clientId);
+      const days = (c?.unpaidRemindDaysOverride != null) ? c.unpaidRemindDaysOverride : (config.unpaidRemindDays || 7);
+      const threshold = addDays(new Date(), -days);
+      return j.doneAt <= threshold;
+    });
+    if (unpaidLong.length) {
+      const amt = unpaidLong.reduce((s,j) => s + (+j.amount||0), 0);
+      const byClient = {};
+      unpaidLong.forEach(j => {
+        const c = getClient(j.clientId);
+        const name = c ? c.name : '未指定';
+        byClient[name] = (byClient[name]||0) + (+j.amount||0);
+      });
+      const clientsStr = Object.entries(byClient).map(([n,a]) => `${n} ${fmt(a)}`).join('、');
+      alerts.push({
+        type: 'unpaid-long',
+        icon: '🟠',
+        title: `${unpaidLong.length} 筆完成已久未收款`,
+        desc: clientsStr,
+        amt: fmt(amt),
+        onClick: () => { lockJobsToIds(unpaidLong.map(j=>j.id), `🟠 完成已久未收款（${unpaidLong.length} 筆）`); switchTab('jobs'); }
+      });
+    }
+  }
+
+  // 4. 月底提醒（從每月第 N 天起）
+  if (config.enableMonthEndAlert !== false) {
+    const dom = new Date().getDate();
+    const startDay = config.monthEndReminderDay || 25;
+    if (dom >= startDay) {
+      const thisMonthUnpaid = active.filter(j => j.done && !j.paid && getMonth(j.date) === thisMonth());
+      if (thisMonthUnpaid.length) {
+        const amt = thisMonthUnpaid.reduce((s,j) => s + (+j.amount||0), 0);
+        alerts.push({
+          type: 'month-end',
+          icon: '📅',
+          title: `月底將至，本月有 ${thisMonthUnpaid.length} 筆可請款`,
+          desc: `可產生請款單寄給業主　共 ${fmt(amt)}`,
+          onClick: () => { lockJobsToIds(thisMonthUnpaid.map(j=>j.id), `📅 本月可請款（${thisMonthUnpaid.length} 筆）`); switchTab('jobs'); }
+        });
+      }
+    }
+  }
+
+  // 4b. 業主固定請款日提醒（v2.7.9 新增）
+  if (config.enableBillingDayAlert !== false) {
+    const now = new Date();
+    state.clients.forEach(c => {
+      if (!c.billingDay || c.billingDay < 1 || c.billingDay > 31) return;
+      const remindDays = +c.billingRemindDays || 3;
+      // 計算下一個請款日：先試本月，過了則用下月
+      let billingDate = new Date(now.getFullYear(), now.getMonth(), c.billingDay);
+      // 處理月份天數不足（e.g. 2 月沒 31 號 → 月底）
+      if (billingDate.getMonth() !== now.getMonth()) {
+        billingDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      }
+      if (billingDate < now) {
+        billingDate = new Date(now.getFullYear(), now.getMonth() + 1, c.billingDay);
+        if (billingDate.getMonth() !== ((now.getMonth() + 1) % 12)) {
+          billingDate = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+        }
+      }
+      const daysUntil = Math.ceil((billingDate - now) / (1000 * 60 * 60 * 24));
+      if (daysUntil < 0 || daysUntil > remindDays) return;
+      // 該業主有沒有未收款的案件可請？
+      const billable = active.filter(j => j.clientId === c.id && j.done && !j.paid);
+      if (!billable.length) return;
+      const amt = billable.reduce((s,j) => s + (+j.amount||0), 0);
+      const dateStr = `${billingDate.getMonth()+1}/${billingDate.getDate()}`;
+      alerts.push({
+        type: 'billing-day-' + c.id,
+        icon: '💼',
+        title: `${c.name} 請款日 ${daysUntil === 0 ? '就是今天' : `還有 ${daysUntil} 天`}（${dateStr}）`,
+        desc: `${billable.length} 筆可請款　共 ${fmt(amt)}`,
+        onClick: () => { lockJobsToIds(billable.map(j=>j.id), `💼 ${c.name} 請款日（${billable.length} 筆）`); switchTab('jobs'); }
+      });
+    });
   }
 
   // 5. 儲值餘額不足提醒
@@ -642,7 +732,7 @@ function computeAlerts() {
   });
 
   // 5b. 智慧待收款警告（v2.2）：每個業主的歷史平均收款週期，超過該週期 1.5 倍的案件
-  const slowJobs = computeSlowPayJobs(active);
+  const slowJobs = config.enableSlowPayAlert !== false ? computeSlowPayJobs(active) : [];
   if (slowJobs.length) {
     const amt = slowJobs.reduce((s,j) => s + (+j.amount||0), 0);
     const samples = slowJobs.slice(0, 2).map(s => `${getClient(s.clientId)?.name || '?'} 拖了 ${s.daysSince} 天（平均 ${s.avgDays} 天）`).join('、');
@@ -3586,6 +3676,16 @@ function deleteJob() {
 let editingClientId = null;
 let pickedColor = COLORS[0];
 
+// v2.7.9: 把 1-31 號的 select option 填好（共用）
+function populateBillingDayDropdown(selected) {
+  const sel = document.getElementById('client-billing-day');
+  if (!sel) return;
+  let html = '<option value="0">— 無固定 —</option>';
+  for (let d = 1; d <= 31; d++) html += `<option value="${d}">${d} 號</option>`;
+  sel.innerHTML = html;
+  sel.value = String(selected || 0);
+}
+
 function openClientModal() {
   // v2.7.4: 鎖在背景拿，不擋 modal 開啟
   tryAcquireLockOrWarn('業主');
@@ -3595,6 +3695,9 @@ function openClientModal() {
   document.getElementById('client-name').value = '';
   document.getElementById('client-note').value = '';
   document.getElementById('client-commission-rate').value = '';
+  populateBillingDayDropdown(0);
+  document.getElementById('client-billing-remind-days').value = 3;
+  document.getElementById('client-unpaid-override').value = '';
   modalPrepayments = [];
   setPaymentMode('normal');
   refreshCommissionDropdown('');
@@ -3610,6 +3713,9 @@ function editClient(id) {
   document.getElementById('client-name').value = c.name;
   document.getElementById('client-note').value = c.note || '';
   document.getElementById('client-commission-rate').value = c.commissionRate || '';
+  populateBillingDayDropdown(c.billingDay || 0);
+  document.getElementById('client-billing-remind-days').value = c.billingRemindDays || 3;
+  document.getElementById('client-unpaid-override').value = c.unpaidRemindDaysOverride != null ? c.unpaidRemindDaysOverride : '';
   modalPrepayments = JSON.parse(JSON.stringify(c.prepayments || []));
   setPaymentMode(c.prepaidMode ? 'prepaid' : 'normal');
   refreshCommissionDropdown(c.commissionTo || '');
@@ -3730,12 +3836,20 @@ function saveClient() {
   const commissionRate = +document.getElementById('client-commission-rate').value || 0;
   const commissionTo = document.getElementById('client-commission-to').value;
   const paymentMode = document.querySelector('input[name="client-payment-mode"]:checked')?.value || 'normal';
+  // v2.7.9: 請款設定
+  const billingDay = +document.getElementById('client-billing-day').value || 0;
+  const billingRemindDays = +document.getElementById('client-billing-remind-days').value || 3;
+  const unpaidOverrideRaw = document.getElementById('client-unpaid-override').value.trim();
+  const unpaidRemindDaysOverride = unpaidOverrideRaw === '' ? null : (+unpaidOverrideRaw || null);
   if (!name) { toast('請輸入業主名稱'); return; }
   const payload = {
     name, note, color: pickedColor,
     commissionRate, commissionTo,
     prepaidMode: paymentMode === 'prepaid',
-    prepayments: paymentMode === 'prepaid' ? modalPrepayments : []
+    prepayments: paymentMode === 'prepaid' ? modalPrepayments : [],
+    billingDay,
+    billingRemindDays,
+    unpaidRemindDaysOverride
   };
   if (editingClientId) {
     const c = getClient(editingClientId);
@@ -4167,8 +4281,7 @@ function importSettings(e) {
       loadSheetConfigUI();
       loadCalendarConfigUI();
       updateSheetSyncBadge();
-      document.getElementById('cfg-unpaid-days').textContent = config.unpaidRemindDays;
-      document.getElementById('cfg-unpaid-days-input').value = config.unpaidRemindDays;
+      loadReminderConfigUI();
       render();
 
       // 引導下一步
@@ -5650,8 +5763,7 @@ function setupAutoSave() {
 
 // ============== Init ==============
 load();
-document.getElementById('cfg-unpaid-days').textContent = config.unpaidRemindDays;
-document.getElementById('cfg-unpaid-days-input').value = config.unpaidRemindDays;
+loadReminderConfigUI();   // v2.7.9: 提醒設定（取代舊的單欄）
 loadUserInfoUI();
 loadSheetConfigUI();
 loadCalendarConfigUI();

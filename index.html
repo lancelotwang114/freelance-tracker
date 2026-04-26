@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.7.8">
+<meta name="app-version" content="2026-04-27-v2.7.9">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -410,20 +410,82 @@
     <div class="card collapsible collapsed" id="card-reminder">
       <div class="card-head" onclick="toggleCard('card-reminder')">
         <h3>🔔 提醒設定</h3>
+        <span class="card-status">每項可獨立調整</span>
         <span class="toggle-arrow">▼</span>
       </div>
       <div class="card-body">
-        <p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">總覽頁會自動顯示這些提醒：</p>
-        <ul style="font-size: 13px; padding-left: 20px; line-height: 1.8;">
-          <li>🔴 案件逾期未完成</li>
-          <li>🟡 未來 3 天到期</li>
-          <li>🟠 完成超過 <span id="cfg-unpaid-days">7</span> 天還沒收款</li>
-          <li>🔵 月底提醒請款（每月 25 號後）</li>
-          <li>💾 超過 14 天沒備份</li>
-        </ul>
-        <label>完成後多少天沒收款就提醒？</label>
-        <input type="number" id="cfg-unpaid-days-input" min="1" max="60" value="7" style="max-width: 120px;">
-        <button class="btn btn-outline btn-sm" style="margin-left: 8px;" onclick="saveConfig()">儲存</button>
+        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">每種提醒可獨立啟用/關閉、調整天數。業主層級可在業主編輯頁覆寫。</p>
+
+        <div style="display: grid; gap: 10px;">
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <label class="checkbox-row" style="margin: 0 0 4px;">
+              <input type="checkbox" id="cfg-alert-overdue">
+              <span>🔴 逾期未完成（過了案件日期還沒勾完成）</span>
+            </label>
+          </div>
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <label class="checkbox-row" style="margin: 0 0 4px;">
+              <input type="checkbox" id="cfg-alert-due-soon">
+              <span>🟡 即將到期</span>
+            </label>
+            <div style="display: flex; gap: 8px; align-items: center; padding-left: 22px; font-size: 13px;">
+              <span>提前</span>
+              <input type="number" id="cfg-due-soon-days" min="1" max="30" value="3" style="max-width: 80px;">
+              <span>天提醒</span>
+            </div>
+          </div>
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <label class="checkbox-row" style="margin: 0 0 4px;">
+              <input type="checkbox" id="cfg-alert-unpaid-long">
+              <span>🟠 完成已久未收款（全域預設）</span>
+            </label>
+            <div style="display: flex; gap: 8px; align-items: center; padding-left: 22px; font-size: 13px;">
+              <span>完成超過</span>
+              <input type="number" id="cfg-unpaid-days-input" min="1" max="120" value="7" style="max-width: 80px;">
+              <span>天就提醒（個別業主可在業主頁覆寫）</span>
+            </div>
+          </div>
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <label class="checkbox-row" style="margin: 0 0 4px;">
+              <input type="checkbox" id="cfg-alert-month-end">
+              <span>📅 月底提醒</span>
+            </label>
+            <div style="display: flex; gap: 8px; align-items: center; padding-left: 22px; font-size: 13px;">
+              <span>每月</span>
+              <input type="number" id="cfg-month-end-day" min="20" max="31" value="25" style="max-width: 80px;">
+              <span>號之後開始提醒可請款</span>
+            </div>
+          </div>
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <label class="checkbox-row" style="margin: 0;">
+              <input type="checkbox" id="cfg-alert-billing-day">
+              <span>💼 業主固定請款日（依業主設定的請款日提前 N 天提醒）</span>
+            </label>
+          </div>
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <label class="checkbox-row" style="margin: 0;">
+              <input type="checkbox" id="cfg-alert-slow-pay">
+              <span>⏱️ 智慧拖款警告（依該業主歷史平均收款週期判斷異常）</span>
+            </label>
+          </div>
+
+          <div style="background: var(--bg); padding: 10px; border-radius: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center; font-size: 13px;">
+              <span>💾 備份提醒：超過</span>
+              <input type="number" id="cfg-backup-days-input" min="1" max="90" value="14" style="max-width: 80px;">
+              <span>天沒匯出備份就提醒</span>
+            </div>
+          </div>
+
+        </div>
+
+        <button class="btn btn-primary btn-sm" style="margin-top: 12px;" onclick="saveConfig()">💾 儲存</button>
       </div>
     </div>
 
@@ -810,6 +872,32 @@
         <input type="number" id="client-commission-rate" min="0" max="100" step="0.5" placeholder="0">
       </div>
     </div>
+
+    <div class="section-divider"></div>
+
+    <!-- v2.7.9: 請款設定 -->
+    <h3 style="font-size: 14px; margin-bottom: 8px;">💼 請款設定（選填）</h3>
+    <p style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+      若此業主有固定請款日（例：每月 15 號），系統會在請款日前 N 天提醒。
+    </p>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+      <div>
+        <label>固定請款日</label>
+        <select id="client-billing-day">
+          <option value="0">— 無固定 —</option>
+        </select>
+      </div>
+      <div>
+        <label>提前幾天提醒</label>
+        <input type="number" id="client-billing-remind-days" min="1" max="30" value="3" placeholder="3">
+      </div>
+    </div>
+
+    <label style="margin-top: 8px;">該業主的「未收款提醒天數」（可覆寫全域）</label>
+    <input type="number" id="client-unpaid-override" min="1" max="120" placeholder="留空 = 用全域設定">
+    <p style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+      留空就走設定頁的全域天數。某些業主收款慢，可單獨調高（例如 30 天才提醒）。
+    </p>
 
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeClientModal()">取消</button>
