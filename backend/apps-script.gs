@@ -135,7 +135,7 @@ function handle_(e, method) {
       case 'testCalendar':
         return json_({ ok: true, result: testCalendar_(params.calendarId) });
       case 'syncCalendar':
-        return json_({ ok: true, result: syncCalendar_(params.calendarId, params.jobs, params.clients, params.reminderMinutes) });
+        return json_({ ok: true, result: syncCalendar_(params.calendarId, params.jobs, params.clients, params.reminderMinutes, params.reminderEvents, params.enableOverdue) });
       default:
         return json_({ ok: false, error: 'Unknown action: ' + action });
     }
@@ -1037,8 +1037,12 @@ function testCalendar_(calendarId) {
  * @param reminderMinutes   提醒提前分鐘數（v2.10.0）：
  *                          0 = 不提醒；undefined = 預設 16 小時前；正數 = 那麼多分鐘前
  *                          會被存到 ScriptProperties 給 iCal 用
+ * @param reminderEvents    額外提醒事件陣列（v2.10.2）：
+ *                          [{ date, type, title, desc }]
+ *                          類型：unpaid-long / month-end / billing-day / slow-pay
+ * @param enableOverdue     是否在主案件事件上標記 🔴 逾期（v2.10.2）
  */
-function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
+function syncCalendar_(calendarId, jobs, clients, reminderMinutes, reminderEvents, enableOverdue) {
   if (!calendarId) throw new Error('缺少 calendarId');
   const cal = CalendarApp.getCalendarById(calendarId);
   if (!cal) throw new Error(`找不到 Calendar：${calendarId}`);
@@ -1094,9 +1098,10 @@ function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
     '#92400e': CalendarApp.EventColor.ORANGE
   };
 
-  // 3. 建立新事件
+  // 3. 建立新事件（主案件）
   let created = 0;
   const errors = [];
+  const todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
   jobs.forEach(j => {
     try {
@@ -1104,8 +1109,12 @@ function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
       const client = clientMap[j.clientId];
       const clientName = client ? client.name : '未指定';
 
+      // v2.10.2: 逾期偵測 — 過了案件日期還沒勾完成，且 enableOverdue 開啟 → 標 🔴
+      const isOverdue = enableOverdue && !j.done && !j.cancelled && j.date < todayStr;
+
       const statusTags = [];
-      if (j.done) statusTags.push('✓完成');
+      if (isOverdue) statusTags.push('🔴逾期');
+      else if (j.done) statusTags.push('✓完成');
       else statusTags.push('進行中');
       if (j.paid) statusTags.push('$已收');
       else if (j.done) statusTags.push('待收款');
@@ -1120,6 +1129,7 @@ function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
       descLines.push(`📌 狀態：${statusTags.join(' / ')}`);
       if (j.doneAt) descLines.push(`✅ 完成日：${j.doneAt}`);
       if (j.paidAt) descLines.push(`💵 收款日：${j.paidAt}`);
+      if (isOverdue) descLines.push(`⚠️ 此案件已逾期未完成`);
       descLines.push('', '— 由外包收益管理工具同步 —');
 
       const dateObj = new Date(j.date);
@@ -1127,14 +1137,16 @@ function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
         description: descLines.join('\n')
       });
 
-      if (client && client.color && colorMap[client.color]) {
+      // 顏色：逾期一律紅，其餘照業主色
+      if (isOverdue) {
+        try { evt.setColor(CalendarApp.EventColor.RED); } catch(e) {}
+      } else if (client && client.color && colorMap[client.color]) {
         try { evt.setColor(colorMap[client.color]); } catch(e) {}
       }
 
       // 加入提醒（v2.10.0：提前分鐘數可由前端傳入）
-      // 全日事件起點是該日 00:00，所以 960 分鐘前 = 前一天早上 8:00 提醒
       try {
-        evt.removeAllReminders();           // 先清掉預設提醒
+        evt.removeAllReminders();
         if (effectiveReminder > 0) {
           evt.addPopupReminder(effectiveReminder);
         }
@@ -1146,10 +1158,47 @@ function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
     }
   });
 
+  // 4. 建立 App 提醒事件（v2.10.2：unpaid-long / month-end / billing-day / slow-pay）
+  // 與主事件共用同一個 [ftracker] TAG，下次同步時會一起被刪重建
+  let reminderCreated = 0;
+  const reminderEventList = reminderEvents || [];
+  reminderEventList.forEach(r => {
+    try {
+      if (!r.date || !r.title) return;
+      const dt = new Date(r.date);
+      // 標題加上 TAG 才會在下次清理時被找到
+      const title = `${TAG} ${r.title}`;
+      const desc = (r.desc || '') + '\n\n— 由外包收益管理工具同步（App 提醒）—';
+      const evt = cal.createAllDayEvent(title, dt, { description: desc });
+      // 不同類型用不同顏色
+      const colorByType = {
+        'unpaid-long': CalendarApp.EventColor.ORANGE,
+        'month-end':   CalendarApp.EventColor.BLUE,
+        'billing-day': CalendarApp.EventColor.MAUVE,
+        'slow-pay':    CalendarApp.EventColor.RED
+      };
+      const c = colorByType[r.type];
+      if (c) { try { evt.setColor(c); } catch(e) {} }
+      // 提醒：當天早上 9 點（=事件開始後 540 分鐘，但 addPopupReminder 是事前，0 表當天 00:00 開始觸發）
+      // 全日事件用前 0 分鐘 = 事件當天午夜會跳，太擾民；用前 -540 分鐘不行（必須 >= 0）
+      // 折衷：所有提醒事件都用同樣的 effectiveReminder（與主事件一致）
+      try {
+        evt.removeAllReminders();
+        if (effectiveReminder > 0) {
+          evt.addPopupReminder(effectiveReminder);
+        }
+      } catch(e) {}
+      reminderCreated++;
+    } catch(err) {
+      errors.push(`提醒「${r.title || '?'}」：${err.message}`);
+    }
+  });
+
   return {
     calendarName: cal.getName(),
     deleted: deleted,
     created: created,
+    reminderCreated: reminderCreated,
     errors: errors,
     syncedAt: new Date().toISOString()
   };

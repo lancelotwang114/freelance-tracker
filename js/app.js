@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.1';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.2';   // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -6694,6 +6694,105 @@ async function testCalendarConnection() {
   }
 }
 
+/**
+ * v2.10.2：建立「提醒事件」清單
+ * 把 App 提醒設定裡所有 enabled 的提醒類型，產生為要送上 Google Calendar 的事件
+ * 各事件帶 type 標記，後端可分類 emoji/顏色
+ *
+ * 回傳：[{ date: 'YYYY-MM-DD', type, title, desc }]
+ *   type: 'overdue' | 'unpaid-long' | 'month-end' | 'billing-day' | 'slow-pay'
+ */
+function buildReminderEvents() {
+  const events = [];
+  const today = todayStr();
+  const active = activeJobs();
+  const clientById = {};
+  state.clients.forEach(c => { clientById[c.id] = c; });
+  const fmtMoney = (n) => 'NT$' + (+n || 0).toLocaleString();
+
+  // 1. 完成已久未收款 → 在 doneAt + N 天當天建提醒
+  if (config.enableUnpaidLongAlert !== false) {
+    active.forEach(j => {
+      if (!j.done || j.paid || !j.doneAt) return;
+      const c = clientById[j.clientId];
+      const days = (c?.unpaidRemindDaysOverride != null) ? c.unpaidRemindDaysOverride : (config.unpaidRemindDays || 7);
+      const remindDate = addDays(new Date(j.doneAt), days);
+      events.push({
+        date: remindDate,
+        type: 'unpaid-long',
+        title: `🟠 ${c?.name || '?'} 已完成 ${days} 天仍未收款：${j.title}`,
+        desc: `業主：${c?.name || '?'}\n案件：${j.title}\n金額：${fmtMoney(j.amount)}\n完成日：${j.doneAt}\n— App 提醒：完成已久未收款 —`
+      });
+    });
+  }
+
+  // 2. 月底提醒：未來 12 個月，每月 day N 建一個事件
+  if (config.enableMonthEndAlert !== false) {
+    const startDay = config.monthEndReminderDay || 25;
+    const now = new Date();
+    for (let i = 0; i < 12; i++) {
+      const dt = new Date(now.getFullYear(), now.getMonth() + i, startDay);
+      // 處理月份天數不足
+      if (dt.getMonth() !== ((now.getMonth() + i) % 12 + 12) % 12) continue;
+      if (dt < new Date(today)) continue;
+      events.push({
+        date: toDateStr(dt),
+        type: 'month-end',
+        title: `📅 月底提醒：可開始整理請款`,
+        desc: `每月 ${startDay} 號之後可開始整理本月可請款案件\n— App 提醒：月底提醒 —`
+      });
+    }
+  }
+
+  // 3. 業主固定請款日：每個有 billingDay 的業主，未來 12 個月建月度提醒
+  if (config.enableBillingDayAlert !== false) {
+    const now = new Date();
+    state.clients.forEach(c => {
+      if (!c.billingDay || c.billingDay < 1 || c.billingDay > 31) return;
+      const remindDays = +c.billingRemindDays || 3;
+      for (let i = 0; i < 12; i++) {
+        let billingDate = new Date(now.getFullYear(), now.getMonth() + i, c.billingDay);
+        // 處理月份天數不足（例如 2 月 31 號 → 該月最後一天）
+        if (billingDate.getMonth() !== ((now.getMonth() + i) % 12 + 12) % 12) {
+          billingDate = new Date(now.getFullYear(), now.getMonth() + i + 1, 0);
+        }
+        const remindDate = addDays(billingDate, -remindDays);  // 已是 YYYY-MM-DD 字串
+        if (remindDate < today) continue;
+        events.push({
+          date: remindDate,
+          type: 'billing-day',
+          title: `📋 ${c.name} 請款日提醒（${billingDate.getMonth()+1}/${c.billingDay} 前 ${remindDays} 天）`,
+          desc: `業主：${c.name}\n固定請款日：每月 ${c.billingDay} 號\n請於 ${toDateStr(billingDate)} 前送出請款單\n— App 提醒：業主固定請款日 —`
+        });
+      }
+    });
+  }
+
+  // 4. 智慧拖款警告：命中今天，建今日提醒
+  if (config.enableSlowPayAlert !== false) {
+    const slowJobs = computeSlowPayJobs(active);
+    slowJobs.forEach(j => {
+      const c = clientById[j.clientId];
+      events.push({
+        date: today,
+        type: 'slow-pay',
+        title: `🐢 拖款警告：${c?.name || '?'} - ${j.title}`,
+        desc: `業主：${c?.name || '?'}\n案件：${j.title}\n金額：${fmtMoney(j.amount)}\n完成日：${j.doneAt}\n已過 ${j.daysSince} 天（該業主平均 ${j.avgDays} 天）\n— App 提醒：智慧拖款警告 —`
+      });
+    });
+  }
+
+  return events;
+}
+
+// 工具：Date → 'YYYY-MM-DD'
+function toDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 async function syncCalendarNow() {
   const calId = document.getElementById('cal-id').value.trim();
   if (!calId) { toast('請先填入 Calendar ID'); return; }
@@ -6713,6 +6812,10 @@ async function syncCalendarNow() {
   toastProgress('📅 同步行事曆中（可能需要 10-30 秒）...');
   try {
     const reminderMinutes = getCalReminderMinutes();
+    // v2.10.2: 額外把 App 提醒（完成已久未收款 / 月底 / 業主請款日 / 智慧拖款）一起送上行事曆
+    const reminderEvents = buildReminderEvents();
+    // 也把 enableOverdueAlert 開關傳給後端，讓主事件能依此標記 🔴
+    const enableOverdue = config.enableOverdueAlert !== false;
     const resp = await fetch(apiUrl, {
       method: 'POST',
       body: JSON.stringify({
@@ -6721,7 +6824,9 @@ async function syncCalendarNow() {
         calendarId: calId,
         jobs: state.jobs,
         clients: state.clients,
-        reminderMinutes: reminderMinutes
+        reminderMinutes: reminderMinutes,
+        reminderEvents: reminderEvents,
+        enableOverdue: enableOverdue
       })
     });
     const data = await resp.json();
@@ -6733,7 +6838,8 @@ async function syncCalendarNow() {
       config.sheetConfig.apiToken = token;
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       renderCalendarSyncStatus();
-      alert(`✓ 同步完成！\n\nCalendar：${r.calendarName}\n刪除舊事件：${r.deleted} 個\n建立新事件：${r.created} 個${r.errors?.length ? '\n\n錯誤：\n' + r.errors.slice(0, 3).join('\n') : ''}`);
+      const remPart = r.reminderCreated > 0 ? `\n建立提醒事件：${r.reminderCreated} 個` : '';
+      alert(`✓ 同步完成！\n\nCalendar：${r.calendarName}\n刪除舊事件：${r.deleted} 個\n建立案件事件：${r.created} 個${remPart}${r.errors?.length ? '\n\n錯誤：\n' + r.errors.slice(0, 3).join('\n') : ''}`);
     } else {
       alert('✗ 同步失敗：\n\n' + data.error);
     }
