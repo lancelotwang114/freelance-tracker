@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.9.9';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.0';   // 與 index.html 的 meta 同步
 
 // ============== 操作日誌（v2.9.5）==============
 const ACTION_LOG_KEY = 'ftActionLog_v1';
@@ -106,6 +106,10 @@ let config = {
   calAutoSync: false,
   calLastSyncAt: null,
   calLastSyncCount: 0,
+  // 提醒模式（v2.10.0）：
+  //   'follow' = 跟隨 dueSoonDays（預設）
+  //   字串數字 = 該分鐘數的提前量；'0' = 不提醒
+  calReminderMode: 'follow',
 
   // 備份追蹤
   lastExportAt: null,
@@ -297,6 +301,8 @@ function saveConfig() {
   config.enableSlowPayAlert = g('cfg-alert-slow-pay')?.checked !== false;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   render();
+  // Calendar 提醒提示文字（如果是 follow 模式，會跟著 dueSoonDays 變動）
+  if (typeof updateCalendarReminderHint === 'function') updateCalendarReminderHint();
   toast('✓ 已儲存設定');
 }
 
@@ -6543,13 +6549,53 @@ async function testSheetConnection() {
 }
 
 // ============== Google Calendar 同步 ==============
+
+/**
+ * 解析 calReminderMode 為實際的提醒分鐘數
+ *   'follow'  → dueSoonDays * 1440
+ *   '0'       → 0（不提醒）
+ *   '60' 等   → 60
+ *   未設定    → 預設 follow → dueSoonDays * 1440
+ */
+function getCalReminderMinutes() {
+  const mode = config.calReminderMode || 'follow';
+  if (mode === 'follow') {
+    const days = Math.max(1, +config.dueSoonDays || 3);
+    return days * 24 * 60;
+  }
+  const n = +mode;
+  return isNaN(n) ? (3 * 24 * 60) : Math.max(0, n);
+}
+
+function describeCalReminder() {
+  const min = getCalReminderMinutes();
+  if (min === 0) return '不提醒';
+  if (min < 60) return `${min} 分鐘前`;
+  if (min < 1440) return `${Math.round(min / 60)} 小時前`;
+  const days = Math.round(min / 1440 * 10) / 10;
+  return `${days} 天前`;
+}
+
 function loadCalendarConfigUI() {
   const g = (id) => document.getElementById(id);
   if (g('cal-enabled')) g('cal-enabled').checked = !!config.calEnabled;
   if (g('cal-id')) g('cal-id').value = config.calId || '';
   if (g('cal-autosync')) g('cal-autosync').checked = !!config.calAutoSync;
+  // 提醒模式
+  if (g('cal-reminder-mode')) {
+    g('cal-reminder-mode').value = config.calReminderMode || 'follow';
+  }
+  updateCalendarReminderHint();
   updateCalendarStatusBadge();
   renderCalendarSyncStatus();
+}
+
+function updateCalendarReminderHint() {
+  const hint = document.getElementById('cal-reminder-hint');
+  if (!hint) return;
+  const days = +config.dueSoonDays || 3;
+  const desc = describeCalReminder();
+  hint.innerHTML = `目前提醒：<b>${desc}</b>　·　套用範圍：Google 行事曆同步事件、iCal 訂閱通知<br><span style="font-size: 11px;">「跟隨即將到期」目前對應 ${days} 天前（在「提醒設定」可調整）</span>`;
 }
 
 function updateCalendarStatusBadge() {
@@ -6583,8 +6629,11 @@ function saveCalendarConfig() {
   config.calEnabled = document.getElementById('cal-enabled').checked;
   config.calId = document.getElementById('cal-id').value.trim();
   config.calAutoSync = document.getElementById('cal-autosync').checked;
+  const reminderEl = document.getElementById('cal-reminder-mode');
+  if (reminderEl) config.calReminderMode = reminderEl.value || 'follow';
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   updateCalendarStatusBadge();
+  updateCalendarReminderHint();
   toast('✓ 已儲存設定');
 }
 
@@ -6638,6 +6687,7 @@ async function syncCalendarNow() {
 
   toastProgress('📅 同步行事曆中（可能需要 10-30 秒）...');
   try {
+    const reminderMinutes = getCalReminderMinutes();
     const resp = await fetch(apiUrl, {
       method: 'POST',
       body: JSON.stringify({
@@ -6645,7 +6695,8 @@ async function syncCalendarNow() {
         token,
         calendarId: calId,
         jobs: state.jobs,
-        clients: state.clients
+        clients: state.clients,
+        reminderMinutes: reminderMinutes
       })
     });
     const data = await resp.json();
@@ -6752,6 +6803,8 @@ function setupAutoSave() {
   if (calEnabledEl) calEnabledEl.addEventListener('change', () => saveCalendarConfig());
   const calAutoEl = document.getElementById('cal-autosync');
   if (calAutoEl) calAutoEl.addEventListener('change', () => saveCalendarConfig());
+  const calReminderEl = document.getElementById('cal-reminder-mode');
+  if (calReminderEl) calReminderEl.addEventListener('change', () => saveCalendarConfig());
 }
 
 // ============== Init ==============

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.9.9">
+<meta name="app-version" content="2026-04-27-v2.10.0">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -678,6 +678,23 @@
 
         <label>行事曆代碼</label>
         <input type="text" id="cal-id" placeholder="example@group.calendar.google.com">
+
+        <label style="margin-top: 12px;">事件提醒時間</label>
+        <select id="cal-reminder-mode">
+          <option value="follow">跟隨「即將到期」設定</option>
+          <option value="0">不提醒</option>
+          <option value="60">事件前 1 小時</option>
+          <option value="180">事件前 3 小時</option>
+          <option value="480">事件前 8 小時</option>
+          <option value="960">事件前 16 小時</option>
+          <option value="1440">事件前 1 天</option>
+          <option value="2880">事件前 2 天</option>
+          <option value="4320">事件前 3 天</option>
+          <option value="10080">事件前 7 天</option>
+        </select>
+        <p style="font-size: 12px; color: var(--muted); margin-top: 4px;" id="cal-reminder-hint">
+          套用範圍：Google 行事曆同步事件、iCal 訂閱通知。
+        </p>
 
         <div class="form-row" style="margin-top: 12px;">
           <label>新增/修改後自動同步</label>

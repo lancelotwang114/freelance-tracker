@@ -135,7 +135,7 @@ function handle_(e, method) {
       case 'testCalendar':
         return json_({ ok: true, result: testCalendar_(params.calendarId) });
       case 'syncCalendar':
-        return json_({ ok: true, result: syncCalendar_(params.calendarId, params.jobs, params.clients) });
+        return json_({ ok: true, result: syncCalendar_(params.calendarId, params.jobs, params.clients, params.reminderMinutes) });
       default:
         return json_({ ok: false, error: 'Unknown action: ' + action });
     }
@@ -903,6 +903,25 @@ function buildICalendar_() {
   const tz = Session.getScriptTimeZone();
   const now = Utilities.formatDate(new Date(), tz, 'yyyyMMdd\'T\'HHmmss');
 
+  // v2.10.0：讀取使用者在前端設定的提醒分鐘數（由 syncCalendar_ 寫入 ScriptProperties）
+  // 沒設過則用 16 小時（預設）。0 表示不提醒。
+  let reminderMin = 16 * 60;
+  try {
+    const stored = PropertiesService.getScriptProperties().getProperty('CAL_REMINDER_MINUTES');
+    if (stored !== null && stored !== '') {
+      const n = +stored;
+      if (!isNaN(n) && n >= 0) reminderMin = n;
+    }
+  } catch(e) {}
+  // 把分鐘數轉成 iCal TRIGGER 格式：0 表不加 alarm；< 60 用 PTnM；< 1440 用 PTnH；其餘用 PnD
+  function buildTrigger(min) {
+    if (min <= 0) return null;
+    if (min % 1440 === 0) return '-P' + (min / 1440) + 'D';
+    if (min % 60 === 0) return '-PT' + (min / 60) + 'H';
+    return '-PT' + min + 'M';
+  }
+  const trigger = buildTrigger(reminderMin);
+
   function escapeIcal(s) {
     return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
   }
@@ -949,12 +968,14 @@ function buildICalendar_() {
     ics.push('SUMMARY:' + escapeIcal(summary));
     ics.push('DESCRIPTION:' + escapeIcal(desc));
     if (c && c.color) ics.push('COLOR:' + c.color);
-    // 提前 1 天提醒（08:00）
-    ics.push('BEGIN:VALARM');
-    ics.push('ACTION:DISPLAY');
-    ics.push('DESCRIPTION:' + escapeIcal('明天截止：' + summary));
-    ics.push('TRIGGER:-PT16H');
-    ics.push('END:VALARM');
+    // 提醒（依使用者設定；trigger 為 null 代表「不提醒」）
+    if (trigger) {
+      ics.push('BEGIN:VALARM');
+      ics.push('ACTION:DISPLAY');
+      ics.push('DESCRIPTION:' + escapeIcal('截止提醒：' + summary));
+      ics.push('TRIGGER:' + trigger);
+      ics.push('END:VALARM');
+    }
     ics.push('END:VEVENT');
   });
 
@@ -963,6 +984,30 @@ function buildICalendar_() {
 }
 
 // ============== Google Calendar 同步 ==============
+
+/**
+ * 【公開函式 — 第一次部署時用】觸發 Calendar API 授權對話框
+ * 用途：Apps Script 函式選單看不到結尾有底線的私有函式（testCalendar_、syncCalendar_）
+ *      所以提供這個沒有底線的公開包裝，讓使用者可以從編輯器的「執行」選單呼叫，
+ *      觸發 Google 跳出 Calendar 權限授權對話框，按「允許」一次後永久生效。
+ *
+ * 使用步驟：
+ *   1. Apps Script 編輯器 → 上方函式選單選 authorizeCalendar
+ *   2. 按「執行」
+ *   3. 跳出「需要授權」→ 按「審查權限」→ 選 Google 帳號 → 進階 → 前往（不安全）→ 允許
+ *   4. 執行紀錄看到 "✓ Calendar 授權成功" 即完成
+ *   5. 之後前端「測試連線」就能正常呼叫了
+ */
+function authorizeCalendar() {
+  const cal = CalendarApp.getDefaultCalendar();
+  const name = cal.getName();
+  const tz = cal.getTimeZone();
+  Logger.log('✓ Calendar 授權成功');
+  Logger.log('  預設日曆：' + name);
+  Logger.log('  時區：' + tz);
+  Logger.log('  之後前端的「測試連線 / 同步到 Google 行事曆」就能正常使用了。');
+  return { ok: true, calendar: name, timezone: tz };
+}
 
 /**
  * 測試 Calendar 是否可存取
@@ -986,14 +1031,32 @@ function testCalendar_(calendarId) {
  * 同步全部案件到 Google Calendar
  * 策略：刪除所有由本工具建立的舊事件（依 TAG 搜尋），再重新建立最新的
  *
- * @param calendarId   目標 Calendar 的 ID（可是本帳號、也可是分享來的外部 Calendar）
- * @param jobs         案件陣列（從前端傳入，不讀 Sheet，減少依賴）
- * @param clients      業主陣列
+ * @param calendarId        目標 Calendar 的 ID（可是本帳號、也可是分享來的外部 Calendar）
+ * @param jobs              案件陣列（從前端傳入，不讀 Sheet，減少依賴）
+ * @param clients           業主陣列
+ * @param reminderMinutes   提醒提前分鐘數（v2.10.0）：
+ *                          0 = 不提醒；undefined = 預設 16 小時前；正數 = 那麼多分鐘前
+ *                          會被存到 ScriptProperties 給 iCal 用
  */
-function syncCalendar_(calendarId, jobs, clients) {
+function syncCalendar_(calendarId, jobs, clients, reminderMinutes) {
   if (!calendarId) throw new Error('缺少 calendarId');
   const cal = CalendarApp.getCalendarById(calendarId);
   if (!cal) throw new Error(`找不到 Calendar：${calendarId}`);
+
+  // v2.10.0：解析提醒分鐘數，並把它存到 ScriptProperties，讓 iCal 也能讀到
+  let effectiveReminder;
+  if (reminderMinutes === 0 || reminderMinutes === '0') {
+    effectiveReminder = 0;
+  } else if (typeof reminderMinutes === 'number' && reminderMinutes > 0) {
+    effectiveReminder = Math.round(reminderMinutes);
+  } else if (typeof reminderMinutes === 'string' && +reminderMinutes > 0) {
+    effectiveReminder = Math.round(+reminderMinutes);
+  } else {
+    effectiveReminder = 16 * 60;  // 沒傳就用預設 16 小時
+  }
+  try {
+    PropertiesService.getScriptProperties().setProperty('CAL_REMINDER_MINUTES', String(effectiveReminder));
+  } catch(e) {}
 
   jobs = jobs || [];
   clients = clients || [];
@@ -1067,6 +1130,16 @@ function syncCalendar_(calendarId, jobs, clients) {
       if (client && client.color && colorMap[client.color]) {
         try { evt.setColor(colorMap[client.color]); } catch(e) {}
       }
+
+      // 加入提醒（v2.10.0：提前分鐘數可由前端傳入）
+      // 全日事件起點是該日 00:00，所以 960 分鐘前 = 前一天早上 8:00 提醒
+      try {
+        evt.removeAllReminders();           // 先清掉預設提醒
+        if (effectiveReminder > 0) {
+          evt.addPopupReminder(effectiveReminder);
+        }
+      } catch(e) {}
+
       created++;
     } catch (err) {
       errors.push(`${j.title || '(無標題)'}：${err.message}`);
