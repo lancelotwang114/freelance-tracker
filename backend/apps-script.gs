@@ -62,13 +62,29 @@ function handle_(e, method) {
       case 'list':
         return json_({ ok: true, data: readAll_(), meta: getMeta_(), listedAt: new Date().toISOString() });
       case 'save':
+        // v2.2: schema 不匹配保護 — 來源 schema 不可低於雲端
+        const cloudMeta = getMeta_() || {};
+        const cloudSchema = +cloudMeta.schemaVersion || 0;
+        const clientSchema = +params.schemaVersion || 0;
+        if (cloudSchema > 0 && clientSchema > 0 && clientSchema < cloudSchema) {
+          return json_({
+            ok: false,
+            error: 'SCHEMA_TOO_OLD',
+            message: `客戶端 schema v${clientSchema} 低於雲端 v${cloudSchema}，請重新整理網頁取得新版`,
+            cloudSchema,
+            clientSchema
+          });
+        }
         // 寫入前自動 snapshot（含冷卻判斷與分層 tier）
         snapshotCurrent_(params.snapshotNote || 'auto-save', {
           tier: 'auto',
           device: params.deviceLabel || 'unknown'
         });
         writeAll_(params.data || {});
-        updateMeta_(params.deviceLabel || 'unknown');
+        updateMeta_(params.deviceLabel || 'unknown', {
+          schemaVersion: clientSchema,
+          appVersion: params.appVersion || ''
+        });
         return json_({ ok: true, savedAt: new Date().toISOString(), meta: getMeta_() });
       case 'listSnapshots':
         return json_({ ok: true, snapshots: listSnapshots_() });
@@ -610,8 +626,9 @@ function getMeta_() {
   return meta;
 }
 
-function updateMeta_(deviceLabel) {
+function updateMeta_(deviceLabel, opts) {
   try {
+    opts = opts || {};
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sheet = ss.getSheetByName('metadata');
     if (!sheet) {
@@ -625,17 +642,24 @@ function updateMeta_(deviceLabel) {
     const ts = new Date().toISOString();
     const version = (+existing.version || 0) + 1;
     const data = readAll_();
-    // 保留其他欄位（lastSnapshotAt、editLock 等），只更新核心欄位
+    // 保留鎖、snapshot 戳記等非每次都要更新的欄位
     const preservedKeys = ['lastSnapshotAt', 'editLockBy', 'editLockAt', 'editLockExpiresAt'];
     const preserved = {};
     preservedKeys.forEach(k => { if (existing[k]) preserved[k] = existing[k]; });
+
+    // schemaVersion 只升不降（防止舊版客戶端覆蓋）
+    const incomingSchema = +opts.schemaVersion || 0;
+    const existingSchema = +existing.schemaVersion || 0;
+    const finalSchema = Math.max(incomingSchema, existingSchema);
 
     const coreRows = [
       ['version', version],
       ['lastModifiedAt', ts],
       ['lastDevice', deviceLabel || 'unknown'],
       ['clientsCount', (data.clients || []).length],
-      ['jobsCount', (data.jobs || []).length]
+      ['jobsCount', (data.jobs || []).length],
+      ['schemaVersion', finalSchema],
+      ['appVersion', opts.appVersion || existing.appVersion || '']
     ];
     const preservedRows = Object.keys(preserved).map(k => [k, preserved[k]]);
     const newRows = coreRows.concat(preservedRows);

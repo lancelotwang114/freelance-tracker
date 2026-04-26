@@ -1,10 +1,11 @@
 /* =========================================
-   外包收益與排程管理 - 主程式 v1.4
+   外包收益與排程管理 - 主程式 v2.2
    ========================================= */
 
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
+const APP_VERSION = '2026-04-27-v2.2';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -406,6 +407,36 @@ function clearJobsLock() {
   render();
 }
 
+// v2.2 智慧待收款：依各業主的歷史平均收款週期判斷異常
+function computeSlowPayJobs(active) {
+  // 1. 計算每個業主的歷史「完成 → 收款」平均天數
+  const cycleByClient = {};  // clientId → { avg, count }
+  state.jobs.forEach(j => {
+    if (!j.doneAt || !j.paidAt || j.cancelled) return;
+    const days = daysBetween(j.doneAt, j.paidAt);
+    if (days < 0 || days > 365) return;  // 排除離群值
+    if (!cycleByClient[j.clientId]) cycleByClient[j.clientId] = { sum: 0, count: 0 };
+    cycleByClient[j.clientId].sum += days;
+    cycleByClient[j.clientId].count++;
+  });
+  const today = todayStr();
+  const slow = [];
+  active.forEach(j => {
+    if (!j.done || j.paid) return;
+    if (!j.doneAt) return;
+    const stat = cycleByClient[j.clientId];
+    // 沒歷史資料 → 跳過（不亂警告）
+    if (!stat || stat.count < 3) return;
+    const avg = Math.round(stat.sum / stat.count);
+    const daysSince = daysBetween(j.doneAt, today);
+    // 超過平均 1.5 倍且最少 14 天 → 警告
+    if (daysSince > avg * 1.5 && daysSince > 14) {
+      slow.push({ ...j, avgDays: avg, daysSince });
+    }
+  });
+  return slow.sort((a,b) => b.daysSince - a.daysSince);
+}
+
 function computeAlerts() {
   const today = todayStr();
   const in3 = addDays(new Date(), 3);
@@ -489,6 +520,20 @@ function computeAlerts() {
       });
     }
   });
+
+  // 5b. 智慧待收款警告（v2.2）：每個業主的歷史平均收款週期，超過該週期 1.5 倍的案件
+  const slowJobs = computeSlowPayJobs(active);
+  if (slowJobs.length) {
+    const amt = slowJobs.reduce((s,j) => s + (+j.amount||0), 0);
+    const samples = slowJobs.slice(0, 2).map(s => `${getClient(s.clientId)?.name || '?'} 拖了 ${s.daysSince} 天（平均 ${s.avgDays} 天）`).join('、');
+    alerts.push({
+      type: 'slow-pay',
+      icon: '⏱️',
+      title: `${slowJobs.length} 筆異常拖款`,
+      desc: samples + (slowJobs.length > 2 ? '…' : '') + ` · 共 ${fmt(amt)}`,
+      onClick: () => { lockJobsToIds(slowJobs.map(j=>j.id), `⏱️ 異常拖款（${slowJobs.length} 筆）`); switchTab('jobs'); }
+    });
+  }
 
   // 6. 備份提醒（> N 天沒匯出備份 + 有資料時才提示）
   if (state.jobs.length > 0) {
@@ -3044,6 +3089,10 @@ function setSyncStatus(status, err) {
       icon = '💤'; cls = 'offline';
       text = '閒置暫停' + pendingNote;
       break;
+    case 'lab-paused':
+      icon = '🧪'; cls = 'offline';
+      text = '開發模式（不推送）';
+      break;
     case 'error':
       icon = '✗'; cls = 'error'; text = '失敗';
       break;
@@ -3104,6 +3153,16 @@ async function pullFromSheet(silent = false) {
       config.sheetConfig.cloudVersion = +data.meta.version || 0;
       config.sheetConfig.cloudLastModifiedAt = data.meta.lastModifiedAt || data.listedAt;
       config.sheetConfig.cloudLastDevice = data.meta.lastDevice || '';
+      config.sheetConfig.cloudSchemaVersion = +data.meta.schemaVersion || 0;
+      config.sheetConfig.cloudAppVersion = data.meta.appVersion || '';
+      // 雲端 schema 比本地新 → 程式過舊，強制提示重整
+      if (config.sheetConfig.cloudSchemaVersion > CURRENT_SCHEMA_VERSION) {
+        showStaleClientBanner(config.sheetConfig.cloudSchemaVersion);
+      }
+      // 雲端 appVersion 變了（別台 PC 推過新版）→ 也提示重整
+      if (data.meta.appVersion && data.meta.appVersion !== APP_VERSION) {
+        showStaleClientBanner(null, data.meta.appVersion);
+      }
     }
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     setSyncStatus('synced');
@@ -3170,11 +3229,21 @@ async function pushToSheet(silent = false, force = false) {
         token: cfg.apiToken,
         deviceLabel: getDeviceLabelForUpload(),
         snapshotNote: `from ${getDeviceLabelForUpload()}`,
-        data: { clients: state.clients, jobs: state.jobs }
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        appVersion: APP_VERSION,
+        data: { schemaVersion: CURRENT_SCHEMA_VERSION, clients: state.clients, jobs: state.jobs }
       })
     });
     const data = await resp.json();
     if (!data.ok) {
+      // v2.2: schema 不匹配 → 強制提示重整、不再自動推送
+      if (data.error === 'SCHEMA_TOO_OLD') {
+        setSyncStatus('error', 'SCHEMA_TOO_OLD');
+        config.sheetPendingPush = false;
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+        showStaleClientBanner(data.cloudSchema);
+        return false;
+      }
       setSyncStatus('error', data.error);
       if (!silent) alert('推送失敗：' + data.error);
       return false;
@@ -3381,6 +3450,11 @@ async function setupDailyForceTrigger() {
 function schedulePush() {
   // 只有「啟用自動同步」狀態下才會自動推
   if (!config.sheetSyncEnabled) return;
+  // Lab/開發模式 → 完全停止任何 push（避免測試影響雲端）
+  if (isLabMode()) {
+    setSyncStatus('lab-paused');
+    return;
+  }
   // Idle 保護：超過 10 分鐘無互動就先標記待推送，等使用者回來再推
   if (isIdle()) {
     config.sheetPendingPush = true;
@@ -3393,6 +3467,187 @@ function schedulePush() {
   clearTimeout(syncTimer);
   setSyncStatus('syncing');
   syncTimer = setTimeout(() => pushToSheet(true), 2000);
+}
+
+// ============== 暗色模式 ==============
+const THEME_KEY = 'ftTheme_v1';
+
+function applyTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  let theme = saved;
+  if (!saved || saved === 'auto') {
+    theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.documentElement.setAttribute('data-theme', theme);
+  // 更新 theme-color meta（手機網址列顏色跟著變）
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', theme === 'dark' ? '#0f1115' : '#3b82f6');
+}
+
+function setTheme(mode) {
+  // 'auto' / 'light' / 'dark'
+  localStorage.setItem(THEME_KEY, mode);
+  applyTheme();
+  loadThemeUI();
+  toast(`✓ 主題：${ {auto: '自動（跟隨系統）', light: '淺色', dark: '深色'}[mode] }`);
+}
+
+function loadThemeUI() {
+  const cur = localStorage.getItem(THEME_KEY) || 'auto';
+  document.querySelectorAll('[name="theme-mode"]').forEach(r => {
+    r.checked = (r.value === cur);
+  });
+}
+
+// 啟動時立刻套用（避免閃白）
+applyTheme();
+// 系統色模式變更時即時切換（auto 模式才有效）
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if ((localStorage.getItem(THEME_KEY) || 'auto') === 'auto') applyTheme();
+  });
+}
+
+// ============== 全域搜尋 ==============
+function onGlobalSearch() {
+  const q = (document.getElementById('global-search')?.value || '').trim().toLowerCase();
+  const box = document.getElementById('global-search-results');
+  if (!box) return;
+  if (!q) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  // 業主比對
+  const matchClient = (c) => {
+    return (c.name || '').toLowerCase().includes(q) ||
+           (c.note || '').toLowerCase().includes(q);
+  };
+  // 案件比對
+  const matchJob = (j) => {
+    return (j.title || '').toLowerCase().includes(q) ||
+           (j.details || '').toLowerCase().includes(q) ||
+           (j.tag || '').toLowerCase().includes(q);
+  };
+  const clients = state.clients.filter(matchClient).slice(0, 10);
+  const jobs = state.jobs.filter(matchJob).slice(0, 30);
+  let html = '';
+  if (clients.length) {
+    html += `<div class="gs-section">業主（${clients.length}）</div>`;
+    html += clients.map(c => `
+      <div class="gs-row" onclick="globalSearchClickClient('${c.id}')">
+        <div class="gs-title">${highlightMatch(c.name, q)}</div>
+        ${c.note ? `<div class="gs-meta">${highlightMatch((c.note || '').slice(0, 60), q)}</div>` : ''}
+      </div>
+    `).join('');
+  }
+  if (jobs.length) {
+    html += `<div class="gs-section">案件（${jobs.length}）</div>`;
+    html += jobs.map(j => {
+      const c = getClient(j.clientId);
+      return `
+        <div class="gs-row" onclick="globalSearchClickJob('${j.id}')">
+          <div class="gs-title">${highlightMatch(j.title || '(無標題)', q)} <span style="color:var(--muted); font-weight:400;">${j.amount ? fmt(j.amount) : ''}</span></div>
+          <div class="gs-meta">${escapeHtml(c?.name || '?')} · ${j.date || '無日期'}${j.tag ? ' · ' + highlightMatch(j.tag, q) : ''}</div>
+        </div>
+      `;
+    }).join('');
+  }
+  if (!clients.length && !jobs.length) {
+    html = '<div class="gs-empty">沒有找到符合「' + escapeHtml(q) + '」的結果</div>';
+  }
+  box.innerHTML = html;
+  box.classList.remove('hidden');
+}
+
+function highlightMatch(text, q) {
+  if (!text) return '';
+  const escaped = escapeHtml(text);
+  if (!q) return escaped;
+  const reg = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
+  return escaped.replace(reg, m => `<mark>${m}</mark>`);
+}
+
+function globalSearchClickClient(cid) {
+  closeGlobalSearch();
+  switchTab('clients');
+  // 滾到該業主
+  setTimeout(() => {
+    const el = document.querySelector(`[data-client-card="${cid}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 100);
+}
+
+function globalSearchClickJob(jid) {
+  closeGlobalSearch();
+  switchTab('jobs');
+  setTimeout(() => editJob(jid), 100);
+}
+
+function closeGlobalSearch() {
+  const box = document.getElementById('global-search-results');
+  if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+  const input = document.getElementById('global-search');
+  if (input) input.value = '';
+}
+
+// 點擊外部關閉搜尋下拉
+document.addEventListener('click', (e) => {
+  const bar = document.querySelector('.global-search-bar');
+  if (bar && !bar.contains(e.target)) {
+    document.getElementById('global-search-results')?.classList.add('hidden');
+  }
+});
+
+// ============== Lab / 開發模式（暫停同步）==============
+const LAB_MODE_KEY = 'ftLabMode_v1';
+function isLabMode() { return localStorage.getItem(LAB_MODE_KEY) === '1'; }
+function toggleLabMode() {
+  const next = !isLabMode();
+  localStorage.setItem(LAB_MODE_KEY, next ? '1' : '0');
+  document.getElementById('lab-mode-banner')?.remove();
+  if (next) {
+    showLabModeBanner();
+    toast('🧪 開發模式已啟用：暫停所有雲端 push（pull 仍會自動進行）', 5000);
+  } else {
+    toast('✓ 開發模式已關閉，恢復雲端同步', 4000);
+  }
+  setSyncStatus(isLabMode() ? 'lab-paused' : (config.sheetSyncEnabled ? 'synced' : 'idle'));
+  updateLabModeUI();
+}
+function showLabModeBanner() {
+  if (document.getElementById('lab-mode-banner')) return;
+  const div = document.createElement('div');
+  div.id = 'lab-mode-banner';
+  div.style.cssText = 'position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#ea580c; color:#fff; padding:10px 16px; border-radius:24px; box-shadow:0 4px 16px rgba(0,0,0,0.2); font-size:13px; z-index:9999; cursor:pointer;';
+  div.innerHTML = '🧪 開發模式 — 不會推到雲端 · 點此關閉';
+  div.onclick = toggleLabMode;
+  document.body.appendChild(div);
+}
+function updateLabModeUI() {
+  const cb = document.getElementById('cfg-lab-mode');
+  if (cb) cb.checked = isLabMode();
+  if (isLabMode()) showLabModeBanner();
+  else document.getElementById('lab-mode-banner')?.remove();
+}
+
+// ============== 過時客戶端橫幅（schema/version 不匹配時）==============
+function showStaleClientBanner(cloudSchema, cloudAppVer) {
+  if (document.getElementById('stale-banner')) return;
+  const div = document.createElement('div');
+  div.id = 'stale-banner';
+  div.style.cssText = 'position:fixed; top:0; left:0; right:0; background:#dc2626; color:#fff; padding:14px 20px; text-align:center; font-size:14px; font-weight:600; z-index:10000; box-shadow:0 2px 8px rgba(0,0,0,0.25);';
+  let msg;
+  if (cloudSchema) {
+    msg = `⚠️ 雲端資料結構已更新到 v${cloudSchema}（你目前 v${CURRENT_SCHEMA_VERSION}），請重整網頁取得新版以避免資料遺失。`;
+  } else {
+    msg = `🆕 偵測到別台 PC 推送了新版 (${cloudAppVer})，目前你是舊版，請重整網頁。`;
+  }
+  div.innerHTML = `${msg} <a onclick="location.reload(true)" style="margin-left:12px; color:#fff; text-decoration:underline; cursor:pointer;">立即重整</a>`;
+  document.body.appendChild(div);
+  // 同時禁用自動 push（避免覆蓋）
+  config.sheetPendingPush = false;
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 }
 
 // 裝置標籤：每台 PC 自己存在 localStorage（不上雲）
@@ -3911,6 +4166,7 @@ function loadSheetConfigUI() {
   g('sheet-api').value = config.sheetConfig?.apiUrl || '';
   g('sheet-url').value = config.sheetConfig?.sheetUrl || '';
   loadDeviceNameUI();
+  updateLabModeUI();
   // 雲端優先 + 自動偵測已強制永久開啟，無 UI
 }
 
@@ -4174,18 +4430,58 @@ render();
 // 啟動時抓 IP 地理位置（24h 快取，失敗不擋）
 fetchDeviceLocation();
 
+// v2.2: 月初自動產生月報 snapshot（每月 1～3 號開頁時，且當月還沒產過）
+function maybeGenerateMonthlySnapshot() {
+  const cfg = config.sheetConfig;
+  if (!cfg?.apiUrl || !cfg?.apiToken || !config.sheetSyncEnabled) return;
+  if (isLabMode()) return;
+  const now = new Date();
+  if (now.getDate() > 3) return;  // 只在 1~3 號跑（給跨日緩衝）
+  const monthKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  const lastKey = localStorage.getItem('ftLastMonthlyReport_v1');
+  if (lastKey === monthKey) return;  // 本月已產過
+
+  // 上個月的數字
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lmKey = lastMonth.getFullYear() + '-' + String(lastMonth.getMonth() + 1).padStart(2, '0');
+  const lmJobs = state.jobs.filter(j => !j.cancelled && getMonth(jobBelongMonth(j)) === lmKey);
+  const total = lmJobs.reduce((s,j) => s + (+j.amount||0), 0);
+  const paid = lmJobs.filter(j => j.paid).reduce((s,j) => s + (+j.amount||0), 0);
+  const note = `${lmKey} 月報：${lmJobs.length} 案件、總額 ${fmt(total)}、已收 ${fmt(paid)}、未收 ${fmt(total - paid)}`;
+
+  fetch(cfg.apiUrl, {
+    method: 'POST',
+    body: JSON.stringify({
+      action: 'manualSnapshot',
+      token: cfg.apiToken,
+      note: '[monthly] ' + note,
+      deviceLabel: getDeviceLabelForUpload()
+    })
+  }).then(r => r.json()).then(data => {
+    if (data.ok) {
+      localStorage.setItem('ftLastMonthlyReport_v1', monthKey);
+      toast('📊 已自動產生 ' + lmKey + ' 月報備份', 5000);
+    }
+  }).catch(() => {});
+}
+
+// v2.2: 啟動時套用主題 + Lab Mode UI
+loadThemeUI();
+updateLabModeUI();
+
 // 啟動時若同步已啟用，自動從 Sheet 拉取最新資料
 if (config.sheetSyncEnabled && config.sheetConfig?.apiUrl && config.sheetConfig?.apiToken) {
   setTimeout(async () => {
     const ok = await pullFromSheet(true);
     if (config.cloudFirstMode && !ok) {
-      // 雲端優先模式但 pull 失敗：唯讀
       toast('⚠️ 雲端優先模式：無法連線雲端，目前為唯讀狀態', 5000);
       setSyncStatus('offline', '雲端優先模式 - 唯讀中');
     }
     setupAutoPoll();
     // 同步運作後再提醒設裝置名（避免新使用者一進來就被多個 modal 蓋）
     setTimeout(maybeShowDeviceNamePrompt, 1500);
+    // v2.2: 月初自動產月報
+    setTimeout(maybeGenerateMonthlySnapshot, 3000);
   }, 500);
 } else {
   setSyncStatus('idle');

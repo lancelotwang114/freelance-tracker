@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.1">
+<meta name="app-version" content="2026-04-27-v2.2">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -43,6 +43,12 @@
     <button data-tab="invoice">請款單</button>
     <button data-tab="settings">設定</button>
   </nav>
+
+  <!-- 全域搜尋列 -->
+  <div class="global-search-bar">
+    <input type="search" id="global-search" placeholder="🔍 搜尋業主、案件、備註…" oninput="onGlobalSearch()" autocomplete="off">
+    <div id="global-search-results" class="global-search-results hidden"></div>
+  </div>
 </div>
 
 <main>
@@ -257,6 +263,32 @@
     <!-- ============== 一般設定 ============== -->
     <div class="settings-section-title">🌟 常用設定</div>
 
+    <!-- 主題（暗色模式）-->
+    <div class="card collapsible collapsed" id="card-theme">
+      <div class="card-head" onclick="toggleCard('card-theme')">
+        <h3>🌗 顯示主題</h3>
+        <span class="card-status">深色 / 淺色 / 自動</span>
+        <span class="toggle-arrow">▼</span>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">選擇 APP 的顏色主題。「自動」會跟著系統設定切換。</p>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="radio" name="theme-mode" value="auto" onchange="setTheme('auto')">
+            <span>🪄 自動（跟隨系統）</span>
+          </label>
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="radio" name="theme-mode" value="light" onchange="setTheme('light')">
+            <span>☀️ 淺色</span>
+          </label>
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="radio" name="theme-mode" value="dark" onchange="setTheme('dark')">
+            <span>🌙 深色</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
     <!-- 我的資料 -->
     <div class="card collapsible" id="card-myinfo">
       <div class="card-head" onclick="toggleCard('card-myinfo')">
@@ -451,6 +483,20 @@
 
         <div style="background: var(--success-light); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--success); margin-top: 4px;">
           ☁️ <b>雲端優先</b> 與 <b>每 30 秒自動偵測</b> 已永久啟用，確保多裝置同步、不會被舊資料覆蓋。
+        </div>
+
+        <div class="section-divider"></div>
+
+        <!-- Lab / 開發模式 -->
+        <div style="margin-top: 8px;">
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="checkbox" id="cfg-lab-mode" onchange="toggleLabMode()">
+            <span>🧪 開發模式 — 暫停所有 push（pull 仍正常）</span>
+          </label>
+          <p style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+            當你要測試新功能、或不確定某次操作是否安全時開啟。所有編輯只存本地、不會推到雲端，異地裝置不受影響。<br>
+            測試完記得關閉，並用「⬆️ 上傳到雲端」按鈕手動推一次（如果想保留變更）。
+          </p>
         </div>
       </div>
     </div>
