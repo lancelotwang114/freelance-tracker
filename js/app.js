@@ -4926,7 +4926,7 @@ async function restoreSnapshot(id) {
 }
 
 // ============== 網頁版本偵測 ==============
-const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || 'unknown';
+// APP_VERSION 已在檔案頂端宣告（v2.2 新增）；此處不再重複宣告
 const APP_VERSION_KEY = 'freelance-tracker-app-version';
 
 function checkAppVersionUpdate() {
