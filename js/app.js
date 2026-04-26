@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.7.7';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.7.8';   // 與 index.html 的 meta 同步
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
 let state = {
@@ -5243,7 +5243,6 @@ let serverAppVersion = null;  // 由 pollAppVersion 更新，給 UI 顯示用
 // v2.7.5+: 終極強制刷新 — 清掉所有可能讓網頁卡舊版的東西
 // （但保留 localStorage 業主案件設定）
 async function hardReload() {
-  if (!confirm('🔄 將清除：\n  · Service Worker\n  · 所有 Cache（HTTP、Cache API）\n  · sessionStorage\n  · Cookies\n\n比 Ctrl+F5 更徹底，可解決頁面一直卡在舊版的問題。\n\n業主、案件、設定（localStorage）不會被清除。\n\n確定？')) return;
   toastProgress('🔄 清除快取中…');
 
   // 1. 取消所有 Service Worker 註冊（連同其控制範圍）
