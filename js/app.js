@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.14';  // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.15';  // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -2778,12 +2778,16 @@ async function exportSingleJobPDF() {
       <b>承製方：</b>${escapeHtml(userName)}
       ${(() => {
         // v2.10.13: 用選中的收款帳號取代舊 bankInfo
+        // v2.10.15: 戶名 + 存摺照片
         const a = getActivePaymentAccount();
         if (!a) return '';
         const parts = [];
         if (a.bank) parts.push(a.bank);
         if (a.account) parts.push(a.account);
-        return parts.length ? `<br>${escapeHtml(parts.join(' / '))}` : '';
+        if (a.holderName) parts.push('戶名 ' + a.holderName);
+        const text = parts.length ? `<br>${escapeHtml(parts.join(' / '))}` : '';
+        const img = a.bankbookImage ? `<div style="margin-top: 8px;"><img src="${a.bankbookImage}" alt="存摺" style="max-width: 240px; max-height: 140px; border-radius: 4px; border: 1px solid #ddd;"></div>` : '';
+        return text + img;
       })()}
     </div>` : ''}
   `;
@@ -3956,8 +3960,9 @@ function drawInvoice() {
       <div class="invoice-payment-title">Payment Information 匯款資訊</div>
       ${activeAcct.bank ? `<div class="invoice-payment-row"><span class="lbl">銀行</span><span class="val">${escapeHtml(activeAcct.bank)}</span></div>` : ''}
       ${activeAcct.account ? `<div class="invoice-payment-row"><span class="lbl">帳號</span><span class="val" style="font-family: monospace;">${escapeHtml(activeAcct.account)}</span></div>` : ''}
-      ${u.name ? `<div class="invoice-payment-row"><span class="lbl">戶名</span><span class="val">${escapeHtml(u.name)}</span></div>` : ''}
+      ${(activeAcct.holderName || u.name) ? `<div class="invoice-payment-row"><span class="lbl">戶名</span><span class="val">${escapeHtml(activeAcct.holderName || u.name)}</span></div>` : ''}
       ${activeAcct.note ? `<div class="invoice-payment-row" style="font-size: 12px; color: var(--muted);"><span class="lbl">備註</span><span class="val">${escapeHtml(activeAcct.note)}</span></div>` : ''}
+      ${activeAcct.bankbookImage ? `<div style="margin-top: 12px;"><img src="${activeAcct.bankbookImage}" alt="存摺" style="max-width: 320px; max-height: 200px; width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--border);"></div>` : ''}
     </div>` : ''}
 
     ${u.note ? `<div style="margin-top: 14px; padding: 10px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--border);">
@@ -4830,6 +4835,65 @@ function ensurePaymentAccounts() {
   }
 }
 
+// v2.10.15: 把上傳圖片縮到指定寬度 + JPEG 壓縮，回傳 data URL
+function resizeImageToDataUrl(file, maxW = 800, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('沒有檔案'));
+    if (!file.type.startsWith('image/')) return reject(new Error('不是圖片檔'));
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } catch (err) { reject(err); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('讀取圖片失敗')); };
+    img.src = url;
+  });
+}
+
+// 上傳存摺照片：壓縮後寫入該帳號 row 的 hidden input，並更新預覽
+async function onBankbookFileChange(input, acctId) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('請選擇圖片檔'); input.value = ''; return; }
+  toastProgress('🖼️ 壓縮圖片中…');
+  try {
+    const dataUrl = await resizeImageToDataUrl(file, 800, 0.7);
+    const row = input.closest('.payment-account-row');
+    if (!row) throw new Error('找不到帳號 row');
+    const hidden = row.querySelector('[data-acct-field="bankbookImage"]');
+    if (hidden) hidden.value = dataUrl;
+    const preview = document.getElementById(`bankbook-preview-${acctId}`);
+    if (preview) preview.innerHTML = `<img src="${dataUrl}" alt="存摺" style="max-width: 200px; max-height: 120px; border-radius: 6px; border: 1px solid var(--border); margin-top: 6px;">`;
+    const removeBtn = document.getElementById(`bankbook-remove-${acctId}`);
+    if (removeBtn) removeBtn.style.display = '';
+    toast('✓ 圖片已上傳，記得按儲存');
+  } catch (err) {
+    toast('圖片處理失敗：' + (err.message || err));
+  }
+  input.value = '';
+}
+
+function clearBankbookImage(acctId) {
+  const row = document.querySelector(`.payment-account-row[data-acct-id="${acctId}"]`);
+  if (!row) return;
+  const hidden = row.querySelector('[data-acct-field="bankbookImage"]');
+  if (hidden) hidden.value = '';
+  const preview = document.getElementById(`bankbook-preview-${acctId}`);
+  if (preview) preview.innerHTML = '';
+  const removeBtn = document.getElementById(`bankbook-remove-${acctId}`);
+  if (removeBtn) removeBtn.style.display = 'none';
+  toast('✓ 已清除存摺照片，記得按儲存');
+}
+
 // 取得目前要顯示在請款單上的收款帳號（依 selectedPaymentAccountId，找不到回第一筆）
 function getActivePaymentAccount() {
   const u = config.userInfo || {};
@@ -4875,16 +4939,32 @@ function renderPaymentAccountsUI() {
           <input type="text" data-acct-field="label" value="${escapeHtml(a.label || '')}" placeholder="例：個人 / 工作室">
         </div>
         <div>
+          <label>戶名（請款單顯示）</label>
+          <input type="text" data-acct-field="holderName" value="${escapeHtml(a.holderName || '')}" placeholder="留空則用我的姓名">
+        </div>
+        <div>
           <label>匯款銀行</label>
           <input type="text" data-acct-field="bank" value="${escapeHtml(a.bank || '')}" placeholder="例：玉山銀行 (808)">
         </div>
-        <div style="grid-column: 1 / -1;">
+        <div>
           <label>匯款帳號</label>
           <input type="text" data-acct-field="account" value="${escapeHtml(a.account || '')}" placeholder="0000-000-000000">
         </div>
         <div style="grid-column: 1 / -1;">
           <label>帳號備註（會列在請款單對應位置）</label>
           <input type="text" data-acct-field="note" value="${escapeHtml(a.note || '')}" placeholder="例：請註明案件編號">
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <label>存摺照片（請款單會附上，自動壓縮到 800px）</label>
+          <input type="hidden" data-acct-field="bankbookImage" value="${escapeHtml(a.bankbookImage || '')}">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <input type="file" accept="image/*" id="bankbook-upload-${escapeHtml(a.id)}" onchange="onBankbookFileChange(this, '${escapeHtml(a.id)}')" style="display: none;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('bankbook-upload-${escapeHtml(a.id)}').click()">📷 ${a.bankbookImage ? '更換照片' : '上傳照片'}</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="bankbook-remove-${escapeHtml(a.id)}" onclick="clearBankbookImage('${escapeHtml(a.id)}')" style="color: var(--danger); ${a.bankbookImage ? '' : 'display: none;'}">移除</button>
+          </div>
+          <div id="bankbook-preview-${escapeHtml(a.id)}">
+            ${a.bankbookImage ? `<img src="${a.bankbookImage}" alt="存摺" style="max-width: 200px; max-height: 120px; border-radius: 6px; border: 1px solid var(--border); margin-top: 6px;">` : ''}
+          </div>
         </div>
       </div>
     </div>
@@ -4897,9 +4977,11 @@ function addPaymentAccount() {
   config.userInfo.paymentAccounts.push({
     id: uid(),
     label: '',
+    holderName: '',
     bank: '',
     account: '',
-    note: ''
+    note: '',
+    bankbookImage: ''
   });
   renderPaymentAccountsUI();
 }
