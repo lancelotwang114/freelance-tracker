@@ -87,6 +87,21 @@ header {
 header h1 { font-size: 18px; font-weight: 600; }
 header .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
+/* 手機版：標題列改直排，按鈕列換行，避免標題被按鈕擠到變直書 */
+@media (max-width: 640px) {
+  header { padding: 12px 16px; }
+  header > div:first-child {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+  header > div:first-child > div:last-child {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  header h1 { font-size: 16px; }
+}
+
 nav.tabs {
   background: var(--card);
   border-bottom: 1px solid var(--border);
