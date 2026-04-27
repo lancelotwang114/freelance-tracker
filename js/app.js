@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.13';  // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.14';  // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -1171,7 +1171,7 @@ function renderDashboard() {
   const dashBulkBtn = document.getElementById('dash-bulk-btn');
   if (dashBulkBtn) dashBulkBtn.textContent = dashBulkMode ? '✕ 退出批次' : '☑️ 批次操作';
 
-  // 月度圖：改成最近 6 個「日曆月份」（空月顯示為 0）
+  // 月度圖：最近 6 個「日曆月份」（v2.10.14：改成由近到遠，當月在最上面）
   const byMonth = {};
   active.forEach(j => {
     if (!j.date) return;
@@ -1183,7 +1183,7 @@ function renderDashboard() {
   const months = [];
   const nowRef = new Date();
   nowRef.setDate(1);
-  for (let i = 5; i >= 0; i--) {
+  for (let i = 0; i <= 5; i++) {
     const dd = new Date(nowRef);
     dd.setMonth(dd.getMonth() - i);
     const mmKey = dd.getFullYear() + '-' + String(dd.getMonth()+1).padStart(2,'0');
