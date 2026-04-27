@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.10.12">
+<meta name="app-version" content="2026-04-27-v2.10.13">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -296,6 +296,10 @@
         <select id="inv-month-end" class="hidden" style="flex: 1; min-width: 120px;"></select>
       </div>
 
+      <!-- v2.10.13：選擇收款帳號（多筆收款資訊時用） -->
+      <label style="margin-top: 12px;">收款帳號</label>
+      <select id="inv-pay-account" onchange="onInvPayAccountChange()"></select>
+
       <!-- v2.10.5：請款單狀態篩選 — preset 按鈕 + 常駐 checkbox -->
       <label style="margin-top: 12px;">顯示狀態</label>
       <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
@@ -334,15 +338,15 @@
     <!-- v2.10.3：重組分類 — 我的資料、通知與提醒、資料備份 -->
     <div class="settings-section-title">🌟 常用設定</div>
 
-    <!-- 我的資料 -->
+    <!-- 我的收款資訊（v2.10.13：bank/account 改成多筆收款帳號） -->
     <div class="card collapsible" id="card-myinfo">
       <div class="card-head" onclick="toggleCard('card-myinfo')">
-        <h3>👤 我的資料</h3>
+        <h3>👤 我的收款資訊</h3>
         <span class="card-status">會顯示在請款單</span>
         <span class="toggle-arrow">▼</span>
       </div>
       <div class="card-body">
-        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">填寫後，產生的請款單會自動帶入，業主拿到就知道怎麼付款。</p>
+        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">填寫後，產生的請款單會自動帶入，業主拿到就知道怎麼付款。可以新增多組收款帳號，請款時再選擇要用哪一組。</p>
         <div class="my-info-grid">
           <div>
             <label>姓名</label>
@@ -360,16 +364,17 @@
             <label>發票抬頭（若有）</label>
             <input type="text" id="me-title" placeholder="工作室名稱">
           </div>
-          <div>
-            <label>匯款銀行</label>
-            <input type="text" id="me-bank" placeholder="例：玉山銀行 (808)">
-          </div>
-          <div>
-            <label>匯款帳號</label>
-            <input type="text" id="me-account" placeholder="0000-000-000000">
-          </div>
         </div>
-        <label>備註（列在請款單底部）</label>
+
+        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--border);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong style="font-size: 14px;">💳 收款帳號</strong>
+            <button type="button" class="btn btn-outline btn-sm" onclick="addPaymentAccount()">+ 新增帳號</button>
+          </div>
+          <div id="payment-accounts-list"></div>
+        </div>
+
+        <label style="margin-top: 12px;">備註（列在請款單底部）</label>
         <textarea id="me-note" placeholder="例：匯款後請告知末五碼..."></textarea>
         <button class="btn btn-primary btn-sm" style="margin-top: 12px;" onclick="saveUserInfo()">儲存</button>
       </div>

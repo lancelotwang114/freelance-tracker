@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.12';  // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.13';  // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -96,15 +96,18 @@ let config = {
   enableBillingDayAlert: true,   // 是否啟用「業主固定請款日」提醒
   enableSlowPayAlert: true,      // 是否啟用「智慧拖款警告」
 
-  // 我的資料（顯示在請款單）
+  // 我的收款資訊（顯示在請款單）
+  // v2.10.13: bank / account 從單筆改成 paymentAccounts 陣列；舊欄位保留作為 fallback
   userInfo: {
     name: '',
     phone: '',
     email: '',
     invoiceTitle: '',
-    bank: '',
-    account: '',
-    note: ''
+    bank: '',                          // 舊欄位（migration 後不再使用，但保留向下相容）
+    account: '',                       // 舊欄位（同上）
+    note: '',
+    paymentAccounts: [],               // [{id, label, bank, account, note}]
+    selectedPaymentAccountId: ''       // 預設使用哪一筆（請款單帶入）
   },
 
   // Google Sheet 雙向同步
@@ -274,6 +277,9 @@ function load() {
 
   // 跑 schema migrations
   runMigrations(state);
+
+  // v2.10.13: 收款帳號從單筆轉多筆（idempotent，舊欄位有值就轉成「預設帳號」）
+  ensurePaymentAccounts();
 
   // 早期版本一次性 migration（業主從備註模式轉儲值制 + 補入儲值紀錄）。
   // 所有裝置同步到雲端後此分支已不會觸發；僅保留結構，名稱與資料皆為 placeholder。
@@ -2770,7 +2776,15 @@ async function exportSingleJobPDF() {
     </div>
     ${userName ? `<div style="margin-top: 24px; font-size: 12px; color: #666; border-top: 1px solid #ddd; padding-top: 12px; color: black;">
       <b>承製方：</b>${escapeHtml(userName)}
-      ${config.userInfo?.bankInfo ? `<br>${escapeHtml(config.userInfo.bankInfo)}` : ''}
+      ${(() => {
+        // v2.10.13: 用選中的收款帳號取代舊 bankInfo
+        const a = getActivePaymentAccount();
+        if (!a) return '';
+        const parts = [];
+        if (a.bank) parts.push(a.bank);
+        if (a.account) parts.push(a.account);
+        return parts.length ? `<br>${escapeHtml(parts.join(' / '))}` : '';
+      })()}
     </div>` : ''}
   `;
   document.body.appendChild(tempBox);
@@ -3648,6 +3662,38 @@ function renderInvoice() {
     if (curMe && allMonths.includes(curMe)) mEnd.value = curMe; else mEnd.value = mSel.value;
   }
 
+  // v2.10.13: 收款帳號下拉
+  renderInvoicePayAccountSelect();
+
+  drawInvoice();
+}
+
+// v2.10.13: 渲染請款單頁的收款帳號下拉
+function renderInvoicePayAccountSelect() {
+  const sel = document.getElementById('inv-pay-account');
+  if (!sel) return;
+  ensurePaymentAccounts();
+  const u = config.userInfo || {};
+  const list = u.paymentAccounts || [];
+  if (!list.length) {
+    sel.innerHTML = `<option value="">（尚未設定收款帳號，請到設定 → 我的收款資訊新增）</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = list.map(a => {
+    const label = a.label || a.bank || '未命名帳號';
+    const tail = a.account ? ' · ' + a.account.slice(-4).padStart(4, '*') : '';
+    return `<option value="${escapeHtml(a.id)}">${escapeHtml(label)}${escapeHtml(tail)}</option>`;
+  }).join('');
+  sel.value = u.selectedPaymentAccountId || list[0].id;
+}
+
+function onInvPayAccountChange() {
+  const sel = document.getElementById('inv-pay-account');
+  if (!sel || !sel.value) return;
+  config.userInfo.selectedPaymentAccountId = sel.value;
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   drawInvoice();
 }
 
@@ -3817,7 +3863,9 @@ function drawInvoice() {
 
   const u = config.userInfo || {};
   const hasMyInfo = u.name || u.email || u.phone;
-  const hasPayInfo = u.bank || u.account;
+  // v2.10.13: 改用 active payment account
+  const activeAcct = getActivePaymentAccount();
+  const hasPayInfo = !!(activeAcct && (activeAcct.bank || activeAcct.account));
 
   v.innerHTML = `<div class="invoice" id="invoice-print">
     ${hasMyInfo ? `<div class="invoice-from">
@@ -3906,9 +3954,10 @@ function drawInvoice() {
 
     ${hasPayInfo ? `<div class="invoice-payment">
       <div class="invoice-payment-title">Payment Information 匯款資訊</div>
-      ${u.bank ? `<div class="invoice-payment-row"><span class="lbl">銀行</span><span class="val">${escapeHtml(u.bank)}</span></div>` : ''}
-      ${u.account ? `<div class="invoice-payment-row"><span class="lbl">帳號</span><span class="val" style="font-family: monospace;">${escapeHtml(u.account)}</span></div>` : ''}
+      ${activeAcct.bank ? `<div class="invoice-payment-row"><span class="lbl">銀行</span><span class="val">${escapeHtml(activeAcct.bank)}</span></div>` : ''}
+      ${activeAcct.account ? `<div class="invoice-payment-row"><span class="lbl">帳號</span><span class="val" style="font-family: monospace;">${escapeHtml(activeAcct.account)}</span></div>` : ''}
       ${u.name ? `<div class="invoice-payment-row"><span class="lbl">戶名</span><span class="val">${escapeHtml(u.name)}</span></div>` : ''}
+      ${activeAcct.note ? `<div class="invoice-payment-row" style="font-size: 12px; color: var(--muted);"><span class="lbl">備註</span><span class="val">${escapeHtml(activeAcct.note)}</span></div>` : ''}
     </div>` : ''}
 
     ${u.note ? `<div style="margin-top: 14px; padding: 10px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--border);">
@@ -4756,32 +4805,147 @@ function exportData() {
   toast('✓ 已匯出，備份時間已更新');
 }
 
-// ============== 我的資料 ==============
+// ============== 我的收款資訊（v2.10.13 改成多筆收款帳號）==============
+
+// 確保 paymentAccounts 陣列存在；若無但有舊單筆 bank/account → 自動建立「預設帳號」
+function ensurePaymentAccounts() {
+  config.userInfo = config.userInfo || {};
+  const u = config.userInfo;
+  if (!Array.isArray(u.paymentAccounts)) u.paymentAccounts = [];
+  if (u.paymentAccounts.length === 0 && (u.bank || u.account)) {
+    u.paymentAccounts.push({
+      id: uid(),
+      label: '預設帳號',
+      bank: u.bank || '',
+      account: u.account || '',
+      note: ''
+    });
+  }
+  if (u.paymentAccounts.length > 0 && !u.selectedPaymentAccountId) {
+    u.selectedPaymentAccountId = u.paymentAccounts[0].id;
+  }
+  // 若選中的 id 不在陣列裡（被刪過）→ 重設為第一筆
+  if (u.selectedPaymentAccountId && !u.paymentAccounts.find(a => a.id === u.selectedPaymentAccountId)) {
+    u.selectedPaymentAccountId = u.paymentAccounts[0]?.id || '';
+  }
+}
+
+// 取得目前要顯示在請款單上的收款帳號（依 selectedPaymentAccountId，找不到回第一筆）
+function getActivePaymentAccount() {
+  const u = config.userInfo || {};
+  const list = Array.isArray(u.paymentAccounts) ? u.paymentAccounts : [];
+  if (!list.length) {
+    // 完全沒有 → 回退舊欄位（向下相容）
+    return (u.bank || u.account) ? { bank: u.bank || '', account: u.account || '', note: '' } : null;
+  }
+  return list.find(a => a.id === u.selectedPaymentAccountId) || list[0];
+}
+
 function loadUserInfoUI() {
+  ensurePaymentAccounts();
   const u = config.userInfo || {};
   const g = (id) => document.getElementById(id);
   if (g('me-name')) g('me-name').value = u.name || '';
   if (g('me-phone')) g('me-phone').value = u.phone || '';
   if (g('me-email')) g('me-email').value = u.email || '';
   if (g('me-title')) g('me-title').value = u.invoiceTitle || '';
-  if (g('me-bank')) g('me-bank').value = u.bank || '';
-  if (g('me-account')) g('me-account').value = u.account || '';
   if (g('me-note')) g('me-note').value = u.note || '';
+  renderPaymentAccountsUI();
+}
+
+// 渲染收款帳號列表（設定頁）
+function renderPaymentAccountsUI() {
+  const wrap = document.getElementById('payment-accounts-list');
+  if (!wrap) return;
+  const u = config.userInfo || {};
+  const list = u.paymentAccounts || [];
+  if (!list.length) {
+    wrap.innerHTML = `<div style="font-size: 13px; color: var(--muted); padding: 8px 0;">尚未新增收款帳號，按下方「+ 新增帳號」開始建立。</div>`;
+    return;
+  }
+  wrap.innerHTML = list.map((a, i) => `
+    <div class="payment-account-row" data-acct-id="${escapeHtml(a.id)}" style="border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; background: var(--bg);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <strong style="font-size: 13px;">收款帳號 ${i + 1}</strong>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="removePaymentAccount('${escapeHtml(a.id)}')" title="刪除這筆收款帳號" style="color: var(--danger);">🗑️ 刪除</button>
+      </div>
+      <div class="my-info-grid">
+        <div>
+          <label>標籤（自己看的）</label>
+          <input type="text" data-acct-field="label" value="${escapeHtml(a.label || '')}" placeholder="例：個人 / 工作室">
+        </div>
+        <div>
+          <label>匯款銀行</label>
+          <input type="text" data-acct-field="bank" value="${escapeHtml(a.bank || '')}" placeholder="例：玉山銀行 (808)">
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <label>匯款帳號</label>
+          <input type="text" data-acct-field="account" value="${escapeHtml(a.account || '')}" placeholder="0000-000-000000">
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <label>帳號備註（會列在請款單對應位置）</label>
+          <input type="text" data-acct-field="note" value="${escapeHtml(a.note || '')}" placeholder="例：請註明案件編號">
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addPaymentAccount() {
+  // 先把目前 UI 上的內容收回 config，再新增空白一筆，重新 render
+  collectPaymentAccountsFromUI();
+  config.userInfo.paymentAccounts.push({
+    id: uid(),
+    label: '',
+    bank: '',
+    account: '',
+    note: ''
+  });
+  renderPaymentAccountsUI();
+}
+
+function removePaymentAccount(id) {
+  collectPaymentAccountsFromUI();
+  const u = config.userInfo;
+  u.paymentAccounts = (u.paymentAccounts || []).filter(a => a.id !== id);
+  if (u.selectedPaymentAccountId === id) {
+    u.selectedPaymentAccountId = u.paymentAccounts[0]?.id || '';
+  }
+  renderPaymentAccountsUI();
+}
+
+// 把畫面上的 input 內容收回 config.userInfo.paymentAccounts（in-place 更新）
+function collectPaymentAccountsFromUI() {
+  const wrap = document.getElementById('payment-accounts-list');
+  if (!wrap) return;
+  const u = config.userInfo || {};
+  const list = u.paymentAccounts || [];
+  wrap.querySelectorAll('.payment-account-row').forEach(row => {
+    const id = row.dataset.acctId;
+    const a = list.find(x => x.id === id);
+    if (!a) return;
+    row.querySelectorAll('[data-acct-field]').forEach(inp => {
+      a[inp.dataset.acctField] = inp.value.trim();
+    });
+  });
 }
 
 function saveUserInfo() {
+  // 收回 UI 上的多筆收款帳號
+  collectPaymentAccountsFromUI();
   config.userInfo = {
+    ...config.userInfo,
     name: document.getElementById('me-name').value.trim(),
     phone: document.getElementById('me-phone').value.trim(),
     email: document.getElementById('me-email').value.trim(),
     invoiceTitle: document.getElementById('me-title').value.trim(),
-    bank: document.getElementById('me-bank').value.trim(),
-    account: document.getElementById('me-account').value.trim(),
     note: document.getElementById('me-note').value.trim()
+    // bank / account 舊欄位不再寫入；paymentAccounts 由上面 collectPaymentAccountsFromUI 維護
   };
+  ensurePaymentAccounts();
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   render();
-  toast('✓ 已儲存我的資料，請款單會自動帶入');
+  toast('✓ 已儲存收款資訊，請款單會自動帶入');
 }
 
 function renderBackupStatus() {
