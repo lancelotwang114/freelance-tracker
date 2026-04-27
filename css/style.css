@@ -682,6 +682,7 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
   padding: 5px 10px;
   border-radius: 20px;
   background: var(--card);
+  color: var(--text);                /* v2.10.3：明確指定文字色，避免 button 元素繼承系統預設色（暗色模式看不見）*/
   border: 1px solid var(--border);
   font-size: 13px;
   cursor: pointer;
@@ -854,14 +855,31 @@ input:focus, select:focus, textarea:focus {
 .modal-actions .btn { flex: 1; }
 
 /* ==================== Invoice ==================== */
+/* v2.10.3：請款單一律用「白底深字」，不跟暗色模式走（請款單是要寄給業主/列印的，必須是紙張外觀）*/
 .invoice {
   background: #fff;
+  color: #1a1a1a;             /* 強制深色文字，避免在暗色模式下繼承到淺灰 */
   padding: 32px;
   border-radius: 8px;
   box-shadow: var(--shadow);
   max-width: 700px;
   margin: 0 auto;
 }
+.invoice h2 { color: #1a1a1a; }
+.invoice .meta { color: #6b7280; }                 /* 副標也用固定灰，避免被 var(--muted) 影響 */
+.invoice th { background: #f3f4f6; color: #6b7280; }  /* 表頭灰底深字 */
+.invoice tbody td { color: #1a1a1a; }
+.invoice tbody td[style*="color:var(--muted)"],
+.invoice tbody td[style*="color: var(--muted)"] { color: #6b7280 !important; }
+.invoice .invoice-total-item .tot-label { color: #6b7280; }
+.invoice .invoice-total-item .tot-value { color: #1a1a1a; }
+.invoice .invoice-payment-row .lbl { color: #6b7280; }
+.invoice .invoice-payment-row .val { color: #1a1a1a; }
+.invoice .invoice-from { color: #1a1a1a; }
+/* 「合計」那條 footer 邊線在暗色模式會用變數，這裡蓋掉 */
+.invoice tfoot tr { border-top-color: #1a1a1a !important; }
+.invoice .invoice-header { border-bottom-color: #1a1a1a; }
+.invoice .invoice-total { border-top-color: #1a1a1a; }
 .invoice-header {
   display: flex; justify-content: space-between;
   align-items: flex-start;

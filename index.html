@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="2026-04-27-v2.10.2">
+<meta name="app-version" content="2026-04-27-v2.10.5">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -51,7 +51,7 @@
       <div style="display: flex; gap: 6px; align-items: center;">
         <button id="hard-reload-btn" onclick="hardReload()" title="強制刷新（清除所有快取、Service Worker、Cookie）" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text); white-space: nowrap;">🔄 刷新頁面</button>
         <button id="action-log-btn" onclick="openActionLogModal()" title="操作日誌（最近 500 筆）" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--text); white-space: nowrap;">📜 日誌</button>
-        <button id="theme-toggle-btn" onclick="cycleTheme()" title="切換深淺色模式" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 14px; cursor: pointer; color: var(--text);">🌗</button>
+        <button id="theme-toggle-btn" onclick="cycleTheme()" title="切換深淺色模式" style="background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; color: var(--text); white-space: nowrap;">主題:系統</button>
         <div id="sync-indicator" class="sync-indicator sync-idle" onclick="switchTab('settings')" title="點擊開啟設定頁">○ 未啟用</div>
       </div>
     </div>
@@ -296,9 +296,30 @@
         <select id="inv-month-end" class="hidden" style="flex: 1; min-width: 120px;"></select>
       </div>
 
+      <!-- v2.10.5：請款單狀態篩選 — preset 按鈕 + 常駐 checkbox -->
+      <label style="margin-top: 12px;">顯示狀態</label>
+      <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+        <button class="btn btn-outline btn-sm" type="button" onclick="applyInvoicePreset('pending')" title="只顯示已完成待收 + 部分收款">📋 請款</button>
+        <button class="btn btn-outline btn-sm" type="button" onclick="applyInvoicePreset('reconcile')" title="所有已完成（含已收款）">✅ 對帳</button>
+        <button class="btn btn-outline btn-sm" type="button" onclick="applyInvoicePreset('progress')" title="只顯示進行中">🔄 進度</button>
+        <button class="btn btn-outline btn-sm" type="button" onclick="applyInvoicePreset('all')" title="所有狀態">📦 全部</button>
+        <span id="inv-status-hint" style="font-size: 12px; color: var(--muted); margin-left: 4px;"></span>
+      </div>
+      <!-- 5 個狀態 checkbox，常駐顯示 -->
+      <div style="margin-top: 8px; padding: 10px; background: var(--bg); border-radius: 8px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px;">
+          <label class="checkbox-row" style="margin: 0;"><input type="checkbox" id="invst-done-unpaid" onchange="onInvoiceStatusChange()"><span>$ 已完成待收款</span></label>
+          <label class="checkbox-row" style="margin: 0;"><input type="checkbox" id="invst-partial" onchange="onInvoiceStatusChange()"><span>🔶 部分收款</span></label>
+          <label class="checkbox-row" style="margin: 0;"><input type="checkbox" id="invst-paid" onchange="onInvoiceStatusChange()"><span>✓ 已完成已收款</span></label>
+          <label class="checkbox-row" style="margin: 0;"><input type="checkbox" id="invst-pending" onchange="onInvoiceStatusChange()"><span>🔄 進行中</span></label>
+          <label class="checkbox-row" style="margin: 0;"><input type="checkbox" id="invst-cancelled" onchange="onInvoiceStatusChange()"><span>🚫 已取消</span></label>
+        </div>
+      </div>
+
       <div style="display:flex; gap: 8px; margin-top: 16px; flex-wrap: wrap;">
         <button class="btn btn-primary" onclick="exportInvoicePDF()">📄 下載 PDF</button>
         <button class="btn btn-primary" onclick="exportInvoicePNG()">🖼️ 下載圖片</button>
+        <button class="btn btn-outline" onclick="copyInvoiceImage()" title="複製到剪貼簿，可直接貼到 LINE / Messenger / Email">📋 複製圖片</button>
         <button class="btn btn-outline" onclick="window.print()">🖨️ 列印</button>
         <button class="btn btn-outline" onclick="copyInvoiceText()">📋 複製純文字</button>
       </div>
@@ -310,74 +331,8 @@
   <section id="tab-settings" class="hidden">
 
     <!-- ============== 一般設定 ============== -->
+    <!-- v2.10.3：重組分類 — 我的資料、通知與提醒、資料備份 -->
     <div class="settings-section-title">🌟 常用設定</div>
-
-    <!-- 通知與訂閱 -->
-    <div class="card collapsible collapsed" id="card-notify">
-      <div class="card-head" onclick="toggleCard('card-notify')">
-        <h3>🔔 通知與訂閱</h3>
-        <span class="card-status">桌面通知 / iCal 訂閱</span>
-        <span class="toggle-arrow">▼</span>
-      </div>
-      <div class="card-body">
-
-        <!-- 瀏覽器原生通知 -->
-        <div style="margin-bottom: 16px;">
-          <label style="font-size: 13px; font-weight: 600;">🖥️ 瀏覽器桌面通知</label>
-          <p style="font-size: 12px; color: var(--muted); margin: 2px 0 6px;">
-            開啟後，每天首次開頁時若有逾期、即將到期、拖款的案件，會跳系統通知。<br>
-            ⚠️ 僅在 APP 開啟時運作；若 PWA 安裝到桌面，效果類似原生 APP。
-          </p>
-          <div id="notif-status" style="font-size: 13px; padding: 6px 10px; background: var(--bg); border-radius: 6px; margin-bottom: 6px;"></div>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button class="btn btn-primary btn-sm" id="notif-enable-btn" onclick="requestNotifPermission()">啟用通知</button>
-            <button class="btn btn-outline btn-sm hidden" id="notif-disable-btn" onclick="disableNotif()">停用通知</button>
-            <button class="btn btn-ghost btn-sm" onclick="sendTestNotification()">🧪 試發一則</button>
-          </div>
-        </div>
-
-        <div class="section-divider"></div>
-
-        <!-- iCal 訂閱 -->
-        <div>
-          <label style="font-size: 13px; font-weight: 600;">📅 iCal 行事曆訂閱</label>
-          <p style="font-size: 12px; color: var(--muted); margin: 2px 0 6px;">
-            把案件截止日輸出成標準 iCal 連結，加進 Google Calendar / iPhone 行事曆 → 截止日自動同步顯示，不用打開這個 APP 也會跳提醒（提前 1 天）。<br>
-            ⚠️ 連結含 token，請勿外流。已收款 / 已取消的案件不會出現。
-          </p>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button class="btn btn-primary btn-sm" onclick="copyIcalUrl()">📋 複製訂閱連結</button>
-            <button class="btn btn-outline btn-sm" onclick="showIcalHelp()">❓ 加入步驟</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 主題（暗色模式）-->
-    <div class="card collapsible collapsed" id="card-theme">
-      <div class="card-head" onclick="toggleCard('card-theme')">
-        <h3>🌗 顯示主題</h3>
-        <span class="card-status">深色 / 淺色 / 自動</span>
-        <span class="toggle-arrow">▼</span>
-      </div>
-      <div class="card-body">
-        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">選擇 APP 的顏色主題。「自動」會跟著系統設定切換。</p>
-        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-          <label class="checkbox-row" style="margin: 0;">
-            <input type="radio" name="theme-mode" value="auto" onchange="setTheme('auto')">
-            <span>🪄 自動（跟隨系統）</span>
-          </label>
-          <label class="checkbox-row" style="margin: 0;">
-            <input type="radio" name="theme-mode" value="light" onchange="setTheme('light')">
-            <span>☀️ 淺色</span>
-          </label>
-          <label class="checkbox-row" style="margin: 0;">
-            <input type="radio" name="theme-mode" value="dark" onchange="setTheme('dark')">
-            <span>🌙 深色</span>
-          </label>
-        </div>
-      </div>
-    </div>
 
     <!-- 我的資料 -->
     <div class="card collapsible" id="card-myinfo">
@@ -420,15 +375,33 @@
       </div>
     </div>
 
-    <!-- 提醒 -->
+    <!-- 通知與提醒（合併「桌面通知 + 提醒設定」）-->
     <div class="card collapsible collapsed" id="card-reminder">
       <div class="card-head" onclick="toggleCard('card-reminder')">
-        <h3>🔔 提醒設定</h3>
-        <span class="card-status">每項可獨立調整</span>
+        <h3>🔔 通知與提醒</h3>
+        <span class="card-status">桌面通知 + 提醒項目</span>
         <span class="toggle-arrow">▼</span>
       </div>
       <div class="card-body">
-        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">每種提醒可獨立啟用/關閉、調整天數。業主層級可在業主編輯頁覆寫。</p>
+
+        <!-- 瀏覽器桌面通知（從原「通知與訂閱」搬過來） -->
+        <div style="margin-bottom: 16px; padding: 12px; background: var(--bg); border-radius: 8px;">
+          <label style="font-size: 13px; font-weight: 600;">🖥️ 瀏覽器桌面通知</label>
+          <p style="font-size: 12px; color: var(--muted); margin: 2px 0 6px;">
+            開啟後，每天首次開頁時若有逾期、即將到期、拖款的案件，會跳系統通知。<br>
+            ⚠️ 僅在 APP 開啟時運作；若 PWA 安裝到桌面，效果類似原生 APP。
+          </p>
+          <div id="notif-status" style="font-size: 13px; padding: 6px 10px; background: var(--card); border-radius: 6px; margin-bottom: 6px;"></div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-primary btn-sm" id="notif-enable-btn" onclick="requestNotifPermission()">啟用通知</button>
+            <button class="btn btn-outline btn-sm hidden" id="notif-disable-btn" onclick="disableNotif()">停用通知</button>
+            <button class="btn btn-ghost btn-sm" onclick="sendTestNotification()">🧪 試發一則</button>
+          </div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <p style="font-size: 13px; color: var(--muted); margin: 12px 0;">每種提醒可獨立啟用/關閉、調整天數。業主層級可在業主編輯頁覆寫。</p>
 
         <div style="display: grid; gap: 10px;">
 
@@ -500,26 +473,6 @@
         </div>
 
         <button class="btn btn-primary btn-sm" style="margin-top: 12px;" onclick="saveConfig()">💾 儲存</button>
-      </div>
-    </div>
-
-    <!-- 跨裝置設定檔 -->
-    <div class="card collapsible collapsed" id="card-portable">
-      <div class="card-head" onclick="toggleCard('card-portable')">
-        <h3>📦 跨裝置設定檔</h3>
-        <span class="card-status">換裝置免重填</span>
-        <span class="toggle-arrow">▼</span>
-      </div>
-      <div class="card-body">
-        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">
-          把目前所有設定打包成檔案，新裝置匯入就不用再填一次。<br>
-          <span style="color: var(--warning);">⚠️ 此檔案含連線密碼，請放隨身碟或密碼管理器，勿傳到 Email、聊天群組。</span>
-        </p>
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn-primary btn-sm" onclick="exportSettings()">📤 匯出</button>
-          <button class="btn btn-outline btn-sm" onclick="document.getElementById('settings-import-file').click()">📥 匯入</button>
-          <input type="file" id="settings-import-file" accept=".json" style="display:none" onchange="importSettings(event)">
-        </div>
       </div>
     </div>
 
@@ -713,6 +666,52 @@
           <button class="btn btn-primary btn-sm" onclick="saveCalendarConfig()">儲存</button>
           <button class="btn btn-outline btn-sm" onclick="testCalendarConnection()">測試連線</button>
           <button class="btn btn-outline btn-sm" onclick="syncCalendarNow()">🔄 現在同步</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 跨裝置設定檔（v2.10.3 從常用搬到進階）-->
+    <div class="card collapsible collapsed" id="card-portable">
+      <div class="card-head" onclick="toggleCard('card-portable')">
+        <h3>📦 跨裝置設定檔</h3>
+        <span class="card-status">換裝置免重填</span>
+        <span class="toggle-arrow">▼</span>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">
+          把目前所有設定打包成檔案，新裝置匯入就不用再填一次。<br>
+          <span style="color: var(--warning);">⚠️ 此檔案含連線密碼，請放隨身碟或密碼管理器，勿傳到 Email、聊天群組。</span>
+        </p>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-primary btn-sm" onclick="exportSettings()">📤 匯出</button>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('settings-import-file').click()">📥 匯入</button>
+          <input type="file" id="settings-import-file" accept=".json" style="display:none" onchange="importSettings(event)">
+        </div>
+      </div>
+    </div>
+
+    <!-- 顯示主題（v2.10.3 從常用搬到進階；右上有快捷按鈕）-->
+    <div class="card collapsible collapsed" id="card-theme">
+      <div class="card-head" onclick="toggleCard('card-theme')">
+        <h3>🌗 顯示主題</h3>
+        <span class="card-status">深色 / 淺色 / 自動</span>
+        <span class="toggle-arrow">▼</span>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">選擇 APP 的顏色主題。「自動」會跟著系統設定切換。<br>右上角的「主題」按鈕可以快速切換。</p>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="radio" name="theme-mode" value="auto" onchange="setTheme('auto')">
+            <span>🪄 自動（跟隨系統）</span>
+          </label>
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="radio" name="theme-mode" value="light" onchange="setTheme('light')">
+            <span>☀️ 淺色</span>
+          </label>
+          <label class="checkbox-row" style="margin: 0;">
+            <input type="radio" name="theme-mode" value="dark" onchange="setTheme('dark')">
+            <span>🌙 深色</span>
+          </label>
         </div>
       </div>
     </div>

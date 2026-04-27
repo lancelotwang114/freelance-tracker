@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.2';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.5';   // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -73,7 +73,8 @@ const ACTION_LABELS = {
   'data-load-demo':   { icon: '🎲',   label: '載入範例' },
   'snapshot-restore': { icon: '↩',    label: '還原 snapshot' },
   'sync-pull':        { icon: '⬇️',   label: '從雲端拉取' },
-  'sync-push':        { icon: '⬆️',   label: '推送到雲端' }
+  'sync-push':        { icon: '⬆️',   label: '推送到雲端' },
+  'invoice-copy':     { icon: '📋',   label: '複製請款單' }
 };
 const COLORS = ['#ef4444','#f59e0b','#10b981','#2563eb','#8b5cf6','#ec4899','#14b8a6','#64748b'];
 
@@ -121,6 +122,10 @@ let config = {
   cloudFirstMode: false,    // 雲端優先：啟動必須 pull 成功，操作前必檢查
   autoPollEnabled: true,    // 自動偵測雲端（預設啟用）
   autoPollInterval: 30,     // 固定 30 秒（不對外開放設定）
+
+  // 請款單篩選狀態（v2.10.4）
+  invStatusMode: 'pending',                                       // pending/reconcile/progress/all/custom
+  invCustomStatuses: ['done-unpaid', 'partial'],                  // mode='custom' 時生效
 
   // Google Calendar 同步
   calEnabled: false,
@@ -363,11 +368,22 @@ function toast(msg, durationMs) {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), durationMs || 2500);
 }
-// 顯示一個會持續到下次 toast 的「進行中」訊息（例如「同步中...」）
-function toastProgress(msg) {
+// 顯示一個「進行中」訊息（例如「同步中...」）
+// v2.10.3：加上安全保險超時 — 即使沒有後續 toast()，也最多顯示 maxMs 毫秒就自動消失
+//         避免函式結尾用 alert/confirm 而忘了關 toast 導致訊息卡住
+function toastProgress(msg, maxMs) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+  // 預設 15 秒上限（網路請求基本都比這短）
+  toastTimer = setTimeout(() => t.classList.remove('show'), maxMs || 15000);
+}
+
+// v2.10.3：明確關閉目前的 toast（用於 alert/confirm 跳出前先把 progress 收掉）
+function toastDismiss() {
+  const t = document.getElementById('toast');
+  if (t) t.classList.remove('show');
   if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
 }
 
@@ -1724,90 +1740,19 @@ function renderClients() {
       const cls = bal.balance < 0 ? 'empty' : (bal.balance < 1000 ? 'low' : '');
       balanceBadge = `<span class="prepaid-badge ${cls}" title="累計儲值 ${fmt(bal.total)} - 已用 ${fmt(bal.used)}">💰 餘額 ${fmt(bal.balance)}</span>`;
     }
-    // 近 12 個月活躍度時間軸
-    const tlMonths = [];
-    const tlNow = new Date();
-    tlNow.setDate(1);
-    for (let i = 11; i >= 0; i--) {
-      const dd = new Date(tlNow);
-      dd.setMonth(dd.getMonth() - i);
-      const mmKey = dd.getFullYear() + '-' + String(dd.getMonth()+1).padStart(2,'0');
-      tlMonths.push(mmKey);
-    }
-    const tlAmounts = {};
-    clientJobs.forEach(j => {
-      const mm = jobBelongMonth(j);
-      tlAmounts[mm] = (tlAmounts[mm] || 0) + (+j.amount||0);
-    });
-    const tlMax = Math.max(...tlMonths.map(m => tlAmounts[m] || 0), 1);
-    const activeMonthCount = tlMonths.filter(m => tlAmounts[m]).length;
-    // 上次接案多久前
-    let lastJobLabel, lastJobDot;
-    if (activeMonthCount === 0) {
-      lastJobLabel = '近一年沒接案';
-      lastJobDot = '🔴';
-    } else {
-      // 找最近有接案的月份
-      const activeMonths = tlMonths.filter(m => tlAmounts[m]);
-      const lastM = activeMonths[activeMonths.length - 1];
-      const idx = tlMonths.indexOf(lastM);
-      const monthsAgo = 11 - idx;
-      if (monthsAgo === 0) { lastJobLabel = '本月有接案'; lastJobDot = '🟢'; }
-      else if (monthsAgo === 1) { lastJobLabel = '上次接案：上個月'; lastJobDot = '🟢'; }
-      else if (monthsAgo <= 3) { lastJobLabel = `上次接案：${monthsAgo} 個月前`; lastJobDot = '🟡'; }
-      else { lastJobLabel = `上次接案：${monthsAgo} 個月前`; lastJobDot = '🔴'; }
-    }
-    const timelineHtml = `
-      <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); margin: 8px 0 4px; padding-left: 24px;">
-        <span><b>📊 活躍度</b>　<span style="color: var(--text);">${lastJobDot} ${lastJobLabel}</span> · 過去 12 個月活躍 <b>${activeMonthCount}/12</b> 個月</span>
-        <span style="font-size: 10px;">每格＝1 個月，越亮金額越大</span>
-      </div>
-      <div style="padding-left: 24px; display: flex; gap: 4px; align-items: center;" title="近 12 個月活躍度（左=12個月前 → 右=本月）">
-        <span style="font-size: 9px; color: var(--muted); min-width: 28px;">12月前</span>
-        <div style="flex: 1; display: flex; gap: 2px;">${
-          tlMonths.map((m, idx) => {
-            const amt = tlAmounts[m] || 0;
-            const pct = amt > 0 ? Math.max(0.1, amt / tlMax) : 0;
-            const opacity = pct > 0 ? Math.max(0.35, pct).toFixed(2) : 1;
-            const bg = amt ? c.color : 'var(--border)';
-            const isCurrent = idx === 11;
-            return `<div title="${m}: ${amt ? fmt(amt) : '無案件'}" style="flex: 1; height: 18px; background-color: ${bg}; opacity: ${opacity}; border-radius: 3px; ${isCurrent?'box-shadow: 0 0 0 1.5px var(--text);':''}"></div>`;
-          }).join('')
-        }</div>
-        <span style="font-size: 9px; color: var(--muted); min-width: 24px; text-align: right;">本月</span>
-      </div>`;
+    // 活躍度時間軸（v2.10.3 隱藏）
+    const timelineHtml = '';
 
     const isExpanded = expandedClients.has(c.id);
     const expandIcon = isExpanded ? '▼' : '▶';
 
-    // v2.5: 健康度指標
-    const health = computeClientHealth(c.id);
-    const healthBadge = health
-      ? `<span class="prepaid-badge" style="background: ${health.color}22; color: ${health.color};" title="健康度 ${health.score}/100">🩺 ${health.label}</span>`
-      : '';
+    // 健康度指標（v2.10.3 隱藏）
+    const healthBadge = '';
 
-    // 展開時顯示該業主的健康度詳情 + 案件清單（最近 50 筆）
+    // 展開時顯示該業主的案件清單（最近 50 筆，健康度詳情已隱藏）
     let expandedJobsHtml = '';
     if (isExpanded) {
-      const h = health;
-      const trendIcon = h.trend === 'up' ? '📈 上升' : h.trend === 'down' ? '📉 下滑' : '➡️ 持平';
-      const lastJobText = h.daysSinceLastJob === null ? '從未接過' :
-                          h.daysSinceLastJob > 90 ? `${h.daysSinceLastJob} 天 ⚠️ 可能流失` :
-                          `${h.daysSinceLastJob} 天前`;
-      const cycleText = h.avgPayCycle === null ? '未知（無歷史收款資料）' :
-                        h.avgPayCycle > 60 ? `${h.avgPayCycle} 天 🐢 偏慢` :
-                        h.avgPayCycle > 30 ? `${h.avgPayCycle} 天` :
-                        `${h.avgPayCycle} 天 🚀 很快`;
-      const trendText = h.recentAvg
-        ? `${trendIcon}（近 6 月平均 ${fmt(h.recentAvg)}${h.prevAvg ? `／前 6 月 ${fmt(h.prevAvg)}` : ''}）`
-        : trendIcon;
-      expandedJobsHtml = `<div style="margin-top: 10px; padding: 12px; background: var(--bg); border-radius: 8px;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border);">
-          <div><div style="font-size: 11px; color: var(--muted);">健康度</div><div style="font-size: 16px; font-weight: 700; color: ${h.color};">${h.score}/100 · ${h.label}</div></div>
-          <div><div style="font-size: 11px; color: var(--muted);">最後接案</div><div style="font-size: 13px;">${lastJobText}</div></div>
-          <div><div style="font-size: 11px; color: var(--muted);">平均收款週期</div><div style="font-size: 13px;">${cycleText}</div></div>
-          <div><div style="font-size: 11px; color: var(--muted);">單價趨勢</div><div style="font-size: 13px;">${trendText}</div></div>
-        </div>`;
+      expandedJobsHtml = `<div style="margin-top: 10px; padding: 12px; background: var(--bg); border-radius: 8px;">`;
       const recent = clientJobs.slice().sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0, 50);
       expandedJobsHtml += `
         <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">
@@ -3012,6 +2957,7 @@ async function showCloudCapacity() {
     const url = cfg.apiUrl + '?action=listSnapshots&token=' + encodeURIComponent(cfg.apiToken);
     const resp = await fetch(url);
     const data = await resp.json();
+    toastDismiss();
     if (!data.ok) { toast('讀取失敗'); return; }
     const snaps = data.snapshots || [];
     const totalBytes = snaps.reduce((s, x) => s + (x.dataSize || 0), 0);
@@ -3046,8 +2992,10 @@ async function showCloudCapacity() {
       ``,
       `Google Sheet 整體上限：1000 萬儲存格（基本不會用到 1%）`
     ].join('\n');
+    toastDismiss();
     alert(msg);
   } catch (err) {
+    toastDismiss();
     toast('錯誤：' + err.message);
   }
 }
@@ -3371,6 +3319,43 @@ async function exportInvoicePNG() {
     link.click();
     toast('✓ 已下載圖片');
   } catch (err) {
+    toastDismiss();
+    toast('匯出失敗：' + err.message);
+  }
+}
+
+// v2.10.3：直接把請款單圖片複製到剪貼簿，使用者可貼到 LINE / Messenger / Email
+async function copyInvoiceImage() {
+  try {
+    const canvas = await captureInvoiceCanvas();
+    if (!canvas) return;
+    // Canvas → Blob → ClipboardItem
+    canvas.toBlob(async (blob) => {
+      if (!blob) { toastDismiss(); toast('產生圖片失敗'); return; }
+      try {
+        if (!navigator.clipboard || !window.ClipboardItem) {
+          toastDismiss();
+          alert('此瀏覽器不支援複製圖片到剪貼簿，請改用「下載圖片」按鈕。\n\n（建議瀏覽器：Chrome / Edge / Safari 最新版）');
+          return;
+        }
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': blob })
+        ]);
+        toastDismiss();
+        toast('✓ 已複製，可直接貼到 LINE / Messenger / Email');
+        logAction('invoice-copy', { summary: '複製請款單到剪貼簿' });
+      } catch (err) {
+        toastDismiss();
+        // 常見原因：頁面沒有 focus、HTTPS 限制等
+        if (String(err).includes('NotAllowedError') || String(err).includes('Document is not focused')) {
+          alert('複製失敗：請先點一下頁面任何地方再試（瀏覽器要求頁面在前景才允許複製）。');
+        } else {
+          alert('複製失敗：' + err.message + '\n\n你的瀏覽器可能不支援，請改用「下載圖片」。');
+        }
+      }
+    }, 'image/png');
+  } catch (err) {
+    toastDismiss();
     toast('匯出失敗：' + err.message);
   }
 }
@@ -3680,6 +3665,103 @@ function onInvModeChange() {
   drawInvoice();
 }
 
+// v2.10.5：請款單狀態篩選 — preset 按鈕 + 常駐 checkbox
+// 不再有「mode」概念；checkbox 勾選的狀態 = 顯示什麼
+// preset 按鈕只是「快速勾選」的捷徑
+
+const INVOICE_STATUS_IDS = {
+  'done-unpaid': 'invst-done-unpaid',
+  'partial':     'invst-partial',
+  'paid':        'invst-paid',
+  'pending':     'invst-pending',
+  'cancelled':   'invst-cancelled'
+};
+
+const INVOICE_PRESETS = {
+  'pending':   ['done-unpaid', 'partial'],                                  // 請款模式（預設）
+  'reconcile': ['done-unpaid', 'partial', 'paid'],                          // 對帳模式
+  'progress':  ['pending'],                                                 // 進度報告
+  'all':       ['done-unpaid', 'partial', 'paid', 'pending', 'cancelled']   // 全部
+};
+
+const INVOICE_PRESET_LABELS = {
+  'pending':   '📋 請款模式',
+  'reconcile': '✅ 對帳模式',
+  'progress':  '🔄 進度報告',
+  'all':       '📦 全部'
+};
+
+// 把單一案件對應到 5 種「狀態類別」之一，給請款單篩選用
+//   'paid'         = 已完成已收款
+//   'partial'      = 部分收款（已收 > 0 且未收清；不論 done 與否）
+//   'done-unpaid'  = 已完成待收款（沒有任何收款）
+//   'pending'      = 進行中（!done）
+//   'cancelled'    = 已取消
+function jobInvoiceCategory(j) {
+  if (j.cancelled) return 'cancelled';
+  if (jobIsFullyPaid(j)) return 'paid';
+  const paid = jobPaidTotal(j);
+  if (paid > 0 && !jobIsFullyPaid(j)) return 'partial';
+  if (j.done) return 'done-unpaid';
+  return 'pending';
+}
+
+// 從目前 5 個 checkbox 取出勾選的狀態陣列
+function getInvoiceCheckedStatuses() {
+  const checked = [];
+  Object.keys(INVOICE_STATUS_IDS).forEach(k => {
+    if (document.getElementById(INVOICE_STATUS_IDS[k])?.checked) checked.push(k);
+  });
+  return checked;
+}
+
+// 把目前勾選狀態存到 config + 比對是否符合某個 preset，回傳該 preset key 或 'custom'
+function detectInvoicePreset(checked) {
+  const sortedNow = [...checked].sort().join(',');
+  for (const [k, list] of Object.entries(INVOICE_PRESETS)) {
+    if ([...list].sort().join(',') === sortedNow) return k;
+  }
+  return 'custom';
+}
+
+// 點 preset 按鈕：自動勾起對應的 checkbox 並重繪
+function applyInvoicePreset(presetKey) {
+  const list = INVOICE_PRESETS[presetKey] || INVOICE_PRESETS.pending;
+  Object.keys(INVOICE_STATUS_IDS).forEach(k => {
+    const el = document.getElementById(INVOICE_STATUS_IDS[k]);
+    if (el) el.checked = list.includes(k);
+  });
+  onInvoiceStatusChange();
+}
+
+// checkbox 任一改動：存 config 並重繪
+function onInvoiceStatusChange() {
+  const checked = getInvoiceCheckedStatuses();
+  config.invCustomStatuses = checked;
+  // 同時記下「上次符合哪個 preset」（給 hint 用）；若是自訂組合則設為 'custom'
+  config.invStatusMode = detectInvoicePreset(checked);
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  drawInvoice();
+}
+
+// 給 drawInvoice 用：取得目前要顯示的狀態 set
+function getInvoiceStatusFilter() {
+  return new Set(getInvoiceCheckedStatuses());
+}
+
+// 載入請款單篩選 UI 到目前 config 的狀態
+function loadInvoiceStatusUI() {
+  // 若沒有任何儲存值 → 套用預設「請款模式」
+  let cs = config.invCustomStatuses;
+  if (!Array.isArray(cs) || cs.length === 0) {
+    cs = INVOICE_PRESETS.pending;
+  }
+  Object.keys(INVOICE_STATUS_IDS).forEach(k => {
+    const el = document.getElementById(INVOICE_STATUS_IDS[k]);
+    if (el) el.checked = cs.includes(k);
+  });
+}
+
 function drawInvoice() {
   const cid = document.getElementById('inv-client').value;
   const mode = document.getElementById('inv-mode')?.value || 'single';
@@ -3697,12 +3779,32 @@ function drawInvoice() {
   }
   const periodLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
 
-  // 請款單排除取消的案件
-  const jobs = activeJobs().filter(j => {
+  // v2.10.4：套用狀態篩選
+  // 注意：這裡改用 state.jobs（不再 activeJobs() 預先排除取消），因為「自訂」可能想包含取消的
+  const allJobs = state.jobs.filter(j => {
     if (j.clientId !== cid) return false;
     const m = getMonth(j.date);
     return m >= rangeStart && m <= rangeEnd;
-  }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  });
+  const statusFilter = getInvoiceStatusFilter();
+  const jobs = allJobs.filter(j => statusFilter.has(jobInvoiceCategory(j)))
+                      .sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+  // 更新 toolbar 提示（顯示目前模式 + 筆數/總額，讓使用者寄出前心理預覽）
+  const hintEl = document.getElementById('inv-status-hint');
+  if (hintEl) {
+    const filteredAmt = jobs.reduce((s,j) => s + jobFinalAmount(j), 0);
+    const totalCount = allJobs.length;
+    const presetKey = detectInvoicePreset(getInvoiceCheckedStatuses());
+    const modeLabel = INVOICE_PRESET_LABELS[presetKey] || '⚙️ 自訂';
+    if (jobs.length === 0) {
+      hintEl.textContent = `${modeLabel}　（這個範圍沒有符合的案件，共 ${totalCount} 筆）`;
+      hintEl.style.color = 'var(--warning)';
+    } else {
+      hintEl.textContent = `${modeLabel}　→ ${jobs.length}${jobs.length===totalCount?'':'/'+totalCount} 筆 · ${fmt(filteredAmt)}`;
+      hintEl.style.color = 'var(--muted)';
+    }
+  }
   // v2.8.1: 用 finalAmount + payment 計算
   const grossTotal = jobs.reduce((s,j) => s + (+j.amount||0), 0);              // 原價合計
   const discountTotal = jobs.reduce((s,j) => s + jobDiscountAmount(j), 0);      // 折扣合計
@@ -3735,7 +3837,7 @@ function drawInvoice() {
       </div>
       <div style="text-align: right;">
         <div class="meta">請款日：${todayStr()}</div>
-        <div class="meta">共 ${jobs.length} 筆</div>
+        <div class="meta">共 ${jobs.length} 筆 · ${fmt(finalTotal)}</div>
       </div>
     </div>
     ${jobs.length ? `<table>
@@ -4958,6 +5060,7 @@ function importSettings(e) {
       loadUserInfoUI();
       loadSheetConfigUI();
       loadCalendarConfigUI();
+      loadInvoiceStatusUI();
       updateSheetSyncBadge();
       loadReminderConfigUI();
       render();
@@ -5444,9 +5547,10 @@ function updateThemeToggleIcon() {
   const btn = document.getElementById('theme-toggle-btn');
   if (!btn) return;
   const cur = localStorage.getItem(THEME_KEY) || 'auto';
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-  btn.textContent = cur === 'auto' ? '🪄' : (isDark ? '🌙' : '☀️');
-  btn.title = `主題：${cur === 'auto' ? '自動（點擊切淺色）' : cur === 'light' ? '淺色（點擊切深色）' : '深色（點擊切自動）'}`;
+  // v2.10.5：顯示「主題:淺色/深色/系統」
+  const label = cur === 'auto' ? '系統' : (cur === 'dark' ? '深色' : '淺色');
+  btn.textContent = `主題:${label}`;
+  btn.title = `目前主題：${label}（點擊循環切換 系統 → 淺色 → 深色）`;
 }
 
 function loadThemeUI() {
@@ -5916,6 +6020,7 @@ async function showSnapshotList() {
     const url = cfg.apiUrl + '?action=listSnapshots&token=' + encodeURIComponent(cfg.apiToken);
     const resp = await fetch(url);
     const data = await resp.json();
+    toastDismiss();
     if (!data.ok) { alert('讀取失敗：' + data.error); return; }
     const list = data.snapshots || [];
 
@@ -6945,6 +7050,7 @@ loadReminderConfigUI();   // v2.7.9: 提醒設定（取代舊的單欄）
 loadUserInfoUI();
 loadSheetConfigUI();
 loadCalendarConfigUI();
+loadInvoiceStatusUI();   // v2.10.4: 請款單狀態篩選
 updateSheetSyncBadge();
 buildRangeOptions();
 setupAutoSave();
