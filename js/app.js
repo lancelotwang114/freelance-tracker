@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.11';  // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.12';  // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -4054,6 +4054,26 @@ function confirmPaidDate() {
 // ----- Job Modal -----
 let editingJobId = null;
 
+// v2.10.12: 業主下拉排序 — 常用 / 最近用過的擺上面（給新增 / 編輯案件用）
+// 分數 = 近 90 天案件數 × 3 + 全期案件數；取消的案件不算；分數同則照業主名稱中文排序
+function sortedClientsForPicker() {
+  const NOW = Date.now();
+  const RECENT_MS = 90 * 24 * 60 * 60 * 1000;
+  const score = c => {
+    const my = state.jobs.filter(j => j.clientId === c.id && !j.cancelled);
+    const recent = my.filter(j => {
+      const t = new Date(j.date).getTime();
+      return !isNaN(t) && (NOW - t) < RECENT_MS;
+    }).length;
+    return recent * 3 + my.length;
+  };
+  return [...state.clients].sort((a, b) => {
+    const diff = score(b) - score(a);
+    if (diff !== 0) return diff;
+    return (a.name || '').localeCompare(b.name || '', 'zh-Hant');
+  });
+}
+
 function openJobModal() {
   if (!state.clients.length) { toast('請先新增業主'); switchTab('clients'); openClientModal(); return; }
   // v2.7.4: 鎖在背景拿，不擋 modal 開啟（修 FAB 點擊慢）
@@ -4062,7 +4082,7 @@ function openJobModal() {
   document.getElementById('job-modal-title').textContent = '新增案件';
   document.getElementById('job-delete-btn').classList.add('hidden');
   const cs = document.getElementById('job-client');
-  cs.innerHTML = state.clients.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  cs.innerHTML = sortedClientsForPicker().map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   if (!document.getElementById('job-date').value) {
     document.getElementById('job-date').value = todayStr();
   }
@@ -4296,7 +4316,7 @@ function editJob(id) {
   document.getElementById('job-modal-title').textContent = '編輯案件';
   document.getElementById('job-delete-btn').classList.remove('hidden');
   const cs = document.getElementById('job-client');
-  cs.innerHTML = state.clients.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  cs.innerHTML = sortedClientsForPicker().map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   cs.value = j.clientId;
   document.getElementById('job-date').value = j.date || '';
   document.getElementById('job-end-date').value = j.endDate || '';
