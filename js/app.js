@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.5';   // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.11';  // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
