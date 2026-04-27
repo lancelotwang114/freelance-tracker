@@ -54,9 +54,9 @@ const API_TOKEN = 'CHANGE_ME_TO_A_LONG_RANDOM_STRING';
 - 用 [https://www.random.org/strings/](https://www.random.org/strings/) 產生一串 32 字元的隨機字串
 - 或者瀏覽器按 F12 → Console 貼 `crypto.randomUUID()` 也可以
 
-範例（**不要直接用這個**，自己產一組）：
+範例格式（**請自己產一組，不要 copy 下面這個**）：
 ```js
-const API_TOKEN = 'xK9pZ2mR4vN7qT3jB8wL5hY6dG1fA0cE';
+const API_TOKEN = '<YOUR_RANDOM_32_CHAR_TOKEN_HERE>';
 ```
 
 改完按 **儲存**（磁碟圖示 / Ctrl+S）。
@@ -109,7 +109,7 @@ const API_TOKEN = 'xK9pZ2mR4vN7qT3jB8wL5hY6dG1fA0cE';
 把剛剛的 URL 後面加 `?action=ping&token=你的TOKEN`，貼到瀏覽器網址列，例如：
 
 ```
-https://script.google.com/macros/s/AKfycbx.../exec?action=ping&token=xK9pZ2mR4vN7qT3jB8wL5hY6dG1fA0cE
+https://script.google.com/macros/s/AKfycbx.../exec?action=ping&token=<YOUR_TOKEN>
 ```
 
 按 Enter，應該會看到：

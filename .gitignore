@@ -1,22 +1,30 @@
 # =====================================================
 # 重要：避免敏感資料 / Token 上傳到 GitHub
+# 註解必須放在「自己一行」，不能放在 pattern 後面，
+# 否則整行（含尾端空白與 #）會被當成 pattern，規則失效
 # =====================================================
 
-# === ⚠️ 絕對不要上傳：個人真實資料 ===
-imports/                          # 你的歷史匯入資料（業主名、金額）
-freelance-backup-*.json           # 任何 JSON 備份檔
-backup/                           # 備份資料夾
-*-private.*                       # 個人化的檔案
-local-data/                       # 任何個人資料
+# === 個人真實資料 ===
+# 你的歷史匯入資料（業主名、金額、Excel 原檔）
+imports/
+# 任何 JSON 備份檔
+freelance-backup-*.json
+# 備份資料夾
+backup/
+# 個人化的檔案
+*-private.*
+# 任何個人資料
+local-data/
 
-# === ⚠️ 絕對不要上傳：含 Token 的檔案 ===
+# === 含 Token 的檔案 ===
 .env
 .env.local
 .env.*.local
 config.local.*
 secrets.*
 credentials.*
-apps-script-deployed.gs           # 若你把含真實 Token 的 .gs 存回本地
+# 若你把含真實 Token 的 .gs 存回本地
+apps-script-deployed.gs
 
 # === 系統 ===
 .DS_Store
@@ -30,10 +38,9 @@ desktop.ini
 *.swo
 *~
 
-# === Node (若未來加入打包工具) ===
+# === Node（若未來加入打包工具） ===
 node_modules/
 dist/
-.env
 package-lock.json
 
 # === 日誌 ===

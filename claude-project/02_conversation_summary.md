@@ -1,6 +1,10 @@
 # 專案緣起與決策摘要
 
 > 這份文件記錄這個專案從「一個 Google Sheet」演化成「網頁工具」的對話脈絡與決策理由。上傳到 Claude Project 當知識檔，之後跟 Claude 協作時它會有完整背景。
+>
+> **最後更新：2026-04-27（對齊 v2.10.5）**
+>
+> 第一～九節是 2026-04 初 v0.1 MVP 階段的設計決策紀錄；**第十節之後**補上 v0.2 → v2.10 的演進摘要。
 
 ## 一、原始需求
 
@@ -116,14 +120,14 @@ freelance-tracker/
 
 **儲存位置：** 瀏覽器 localStorage，key 為 `freelance-tracker-v1`。
 
-## 八、下一步待辦（依優先順序）
+## 八、下一步待辦（v0.1 當時規劃，已過時）
 
-1. **v0.2 Google Sheet 後端** — 資料跨裝置同步、自動備份
-2. **v0.3 部署** — 推 GitHub Pages，變成網址
-3. **v0.4 請款單強化** — 姓名/匯款資訊/LOGO/稅率/請款編號
-4. **v0.5 進階** — PWA、深色模式、圖表、甘特圖
+> ⚠️ 這是 v0.1 完成時定下的下一步；**目前實際版本已迭代到 v2.10.5**，本節清單裡的東西全都做完且超過了。現行 ROADMAP 看根目錄 `ROADMAP.md`。
 
-完整計畫見 `docs/ROADMAP.md`。
+1. ~~v0.2 Google Sheet 後端~~ → 已於 v2.0 完成
+2. ~~v0.3 部署~~ → 已部署到 `https://lancelotwang114.github.io/freelance-tracker/`
+3. ~~v0.4 請款單強化~~ → 「我的資料」帶入完成；稅率 / 二代健保保留未做
+4. ~~v0.5 進階~~ → PWA、深色模式、圖表完成；甘特圖未做（已歸入 v2.6 子任務範疇）
 
 ## 九、協作約定（給 Claude 看的提醒）
 
@@ -131,5 +135,44 @@ freelance-tracker/
 - 避免過度設計；使用者是「略懂但想省力」
 - 重大決策前先問再做（用 AskUserQuestion 給選項）
 - 不擅自引入新框架 / 依賴
-- 不擅自修改資料結構
+- 不擅自修改資料結構（schema 改動要同步 migration + Apps Script COLS）
 - 金額用 `NT$` + 千分位；日期用 `YYYY-MM-DD`
+- 暗色模式下請款單必須維持白底深字（紙張外觀）
+
+## 十、v0.1 之後的演進摘要（2026-04 持續迭代）
+
+| 版本群 | 月份 | 主題 | 重點 |
+|------|------|------|------|
+| v0.2 ~ v0.3 | 2025-12 ~ 2026-01 | 雙狀態 + 收益分頁 | `paid` / `doneAt` / `paidAt`、堆疊柱狀圖、業主貢獻排行、備份提醒、iCal 訂閱、行事曆月檢視 |
+| v1.0 | 2026-02 | 解耦完成 / 收款 + 業主儲值制 | 雙勾勾、批次操作、業主搜尋與排序、多月合併請款、月份階層篩選 |
+| v2.0 | 2026-03 | 雲端同步 | Apps Script 雙向同步、snapshot 備份系統、每日 03:00 自動 trigger、同步狀態指示器、Lab 模式 |
+| v2.5 | 2026-04 上 | 跨裝置 + 衝突保護 | 跨裝置設定檔匯出 / 匯入、ABC 衝突保護機制 |
+| v2.7 | 2026-04 上 | 業主洞見 | 業主健康度、初次使用引導、分潤系統、CSV 匯出、時間熱圖、案件類型派圖、跨業主月報 |
+| v2.9 | 2026-04 中 | 操作日誌 + 部分收款 | 最近 500 筆操作日誌、備份還原 diff 預覽、`payments[]` 多筆部分收款、業主固定請款日、智慧拖款警告 |
+| v2.10 | 2026-04-27 | Calendar 同步 + 請款單篩選 | Google Calendar 同步全 6 種提醒、提醒時間可調、請款單狀態篩選 UI（preset + checkbox）、暗色模式請款單修復、複製圖片到剪貼簿 |
+
+## 十一、目前的技術現況（v2.10.5）
+
+- **前端：** 純 HTML / CSS / 原生 JS，無框架；只引入 `html2canvas` + `jsPDF` 兩個 CDN 套件
+- **資料層：** localStorage（schema v7，含 migration）+ Google Apps Script + Google Sheet 雙向同步
+- **離線：** Service Worker + PWA manifest，可加到主畫面、版本更新偵測
+- **部署：** GitHub Pages（`https://lancelotwang114.github.io/freelance-tracker/`）
+- **行事曆：** Google Calendar 雙向 + iCal 訂閱（已隱藏 UI 但程式碼保留）
+- **檔案結構：**
+  ```
+  index.html / css/style.css / js/app.js
+  service-worker.js / manifest.json
+  backend/apps-script.gs（+ SETUP.md / CALENDAR-SETUP.md）
+  docs/ROADMAP.md（v0.x 歷史）/ ROADMAP.md（現行）
+  CHANGELOG.md / README.md
+  claude-project/（Claude Project 設定包，本目錄）
+  ```
+
+## 十二、下一步（v2.5+，現行）
+
+詳見根目錄 `ROADMAP.md`。摘要：
+
+1. **v2.5 — 業主洞見 + 通知**（進行中）：業主健康度儀表板、瀏覽器原生通知、iCal 訂閱輸出
+2. **v2.6 — 工作流自動化**：估價單、子任務 / Checklist、番茄鐘 / 計時器
+3. **v2.7 — 資料分析**：忙閒週期、個人時薪趨勢、模糊重複偵測
+4. **v2.8 — UX 優化**：自訂顏色主題、拖曳排序、Undo / Redo

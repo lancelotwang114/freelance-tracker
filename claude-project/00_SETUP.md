@@ -31,10 +31,12 @@ Project 內找 **Add Content** / **+ Add files**，上傳以下檔案（順序�
 
 - [ ] `claude-project/02_conversation_summary.md` — 對話脈絡 + 決策記錄
 - [ ] `README.md` — 專案說明
-- [ ] `docs/ROADMAP.md` — 開發路線圖
+- [ ] `ROADMAP.md` — 現行開發路線圖（**根目錄那份**，不是 `docs/ROADMAP.md`，後者是 v0.x 歷史檔）
+- [ ] `CHANGELOG.md` — 完整版本歷史
 - [ ] `index.html` — 主畫面原始碼
 - [ ] `css/style.css` — 樣式
 - [ ] `js/app.js` — 程式邏輯
+- [ ] `backend/apps-script.gs` — Apps Script 後端（要動雲端同步時必傳）
 
 **可選（之後需要時再傳）：**
 
@@ -47,16 +49,17 @@ Project 內找 **Add Content** / **+ Add files**，上傳以下檔案（順序�
 
 > 我現在的專案進度到哪？下一步要做什麼？
 
-Claude 應該會回答：目前是 v0.1 MVP 完成，下一步是 v0.2 接 Google Sheet。如果它能答出這個，代表設定成功。
+Claude 應該會回答：目前是 **v2.10.5**，下一階段是 v2.5（業主洞見 + 通知）。如果它能答出這個，代表設定成功。
 
 ## 步驟 5 — 往下走
 
 之後就可以在這個 Project 裡持續工作，例如：
 
-- 「幫我寫 v0.2 的 Google Apps Script」
-- 「把我舊的 Google Sheet 資料匯入」
-- 「加個深色模式」
-- 「我要部署到 GitHub Pages」
+- 「幫我做業主健康度儀表板」（v2.5）
+- 「加估價單功能」（v2.6）
+- 「忙閒週期分析怎麼做」（v2.7）
+- 「請款單 PDF 樣式想調整」
+- 「Apps Script 同步偶爾出錯，幫我看 log」
 
 Claude 會記得所有背景，不用再解釋。
 
@@ -64,9 +67,9 @@ Claude 會記得所有背景，不用再解釋。
 
 ## 維護建議
 
-- 每次完成一個版本（例如 v0.2 做完），把 `02_conversation_summary.md` 更新一下，然後重新上傳替換
-- 或每做完一個階段，寫一份新的 `03_v02_summary.md`、`04_v03_summary.md` 疊上去
-- 程式碼改動比較大時，記得同步更新 Project 裡的 `index.html` / `app.js` / `style.css`
+- 每次發新版本，記得更新 `CHANGELOG.md` + `ROADMAP.md`，並重新上傳到 Project 替換
+- 大改 schema 時記得同步 `01_project_instructions.md` 裡的「資料結構」區塊
+- 程式碼改動比較大時，記得同步更新 Project 裡的 `index.html` / `app.js` / `style.css` / `backend/apps-script.gs`
 
 ## 檔案清單
 

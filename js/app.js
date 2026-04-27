@@ -275,13 +275,13 @@ function load() {
   // 跑 schema migrations
   runMigrations(state);
 
-  // 自動 migration：Esthé One 從備註轉換成儲值制（一次性）
+  // 早期版本一次性 migration（業主從備註模式轉儲值制 + 補入儲值紀錄）。
+  // 所有裝置同步到雲端後此分支已不會觸發；僅保留結構，名稱與資料皆為 placeholder。
   state.clients.forEach(c => {
-    if (c.name === 'Esthé One' && !c.prepaidMode && (c.note || '').includes('儲值')) {
+    if (c.name === '__LEGACY_PREPAID_MIGRATION__' && !c.prepaidMode && (c.note || '').includes('儲值')) {
       c.prepaidMode = true;
       c.prepayments = [
-        { id: uid(), date: '2025-09-12', amount: 2000, note: 'LINEPAY' },
-        { id: uid(), date: '2025-09-15', amount: 3000, note: 'LINEPAY' }
+        { id: uid(), date: '0000-00-00', amount: 0, note: '' }
       ];
       c.note = '';
       state.jobs.forEach(j => {
