@@ -1,7 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#3b82f6"/>
-  <g fill="#fff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
-    <text x="256" y="220" text-anchor="middle" font-size="120" font-weight="700">NT$</text>
-    <text x="256" y="360" text-anchor="middle" font-size="80" font-weight="500">外包</text>
-  </g>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 滿版藍色漸層背景（系統會自動加圓角 / 遮罩，所以不畫圓角） -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <!-- 三柱遞增長條（保留中央 80% 安全區，maskable 圓形遮罩也不會被裁） -->
+  <rect x="128" y="300" width="60" height="100" rx="12" fill="rgba(255,255,255,0.5)"/>
+  <rect x="226" y="240" width="60" height="160" rx="12" fill="rgba(255,255,255,0.75)"/>
+  <rect x="324" y="160" width="60" height="240" rx="12" fill="#fff"/>
+
+  <!-- 最高那柱頂端的綠色完成標記（外圈深藍描邊作分隔，避免跟白柱融在一起） -->
+  <circle cx="354" cy="190" r="44" fill="#10b981" stroke="#1e40af" stroke-width="6"/>
+  <path d="M333 192 L350 209 L378 178" stroke="#fff" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
