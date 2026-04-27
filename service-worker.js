@@ -2,7 +2,7 @@
 // 策略：app shell（HTML/CSS/JS）走 Cache-First，雲端 API 一律走 Network-Only
 // 升 CACHE_VERSION 會讓使用者下次開頁時自動取得新版
 
-const CACHE_VERSION = 'ftracker-v2.10.8';
+const CACHE_VERSION = 'ftracker-v2.10.10';
 const APP_SHELL = [
   './',
   './index.html',
@@ -25,6 +25,13 @@ self.addEventListener('activate', (event) => {
       .then(keys => Promise.all(keys.filter(k => k !== CACHE_VERSION).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+
+// v2.10.10: 收到 SKIP_WAITING 訊息就立刻取代舊 SW，避免「點此更新」沒反應
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (event) => {

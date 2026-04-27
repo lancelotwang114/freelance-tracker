@@ -6479,24 +6479,63 @@ let serverAppVersion = null;  // 由 pollAppVersion 更新，給 UI 顯示用
 
 // v2.7.5+: 終極強制刷新 — 清掉所有可能讓網頁卡舊版的東西
 // （但保留 localStorage 業主案件設定）
+// v2.10.10: 加保險超時（清快取卡住也會 reload）+ skipWaiting message + 最後 fallback 用 reload(true)
 async function hardReload() {
   toastProgress('🔄 清除快取中…');
+  console.log('[hardReload] start');
 
-  // 1. 取消所有 Service Worker 註冊（連同其控制範圍）
+  // 全程最多 4 秒，超時就直接強制 reload，避免任何 await 卡死害用戶以為「沒反應」
+  const SAFETY_MS = 4000;
+  let done = false;
+  const safetyTimer = setTimeout(() => {
+    if (done) return;
+    console.warn('[hardReload] safety timeout — forcing reload');
+    forceReload();
+  }, SAFETY_MS);
+
+  function forceReload() {
+    done = true;
+    clearTimeout(safetyTimer);
+    // 用 query string 破 HTTP / SW cache，replace 避免 history 殘留
+    const url = location.pathname + '?_=' + Date.now() + '&hr=1';
+    try {
+      location.replace(url);
+    } catch (_) {
+      // 最後 fallback：reload(true)（有些瀏覽器仍支援 forced reload）
+      try { location.reload(true); } catch (_) { location.href = url; }
+    }
+  }
+
+  // 1. 叫所有 SW skipWaiting + unregister（不 await 太久，超時就放）
   try {
     if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map(r => r.unregister()));
+      const regs = await Promise.race([
+        navigator.serviceWorker.getRegistrations(),
+        new Promise(r => setTimeout(() => r([]), 1500))
+      ]);
+      regs.forEach(r => {
+        try { r.waiting?.postMessage({ type: 'SKIP_WAITING' }); } catch (_) {}
+      });
+      await Promise.race([
+        Promise.all(regs.map(r => r.unregister())),
+        new Promise(r => setTimeout(r, 1500))
+      ]);
     }
-  } catch (err) { console.error('SW unregister failed:', err); }
+  } catch (err) { console.error('[hardReload] SW step failed:', err); }
 
   // 2. 刪除所有 Cache API 快取
   try {
     if ('caches' in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map(k => caches.delete(k)));
+      const keys = await Promise.race([
+        caches.keys(),
+        new Promise(r => setTimeout(() => r([]), 1000))
+      ]);
+      await Promise.race([
+        Promise.all(keys.map(k => caches.delete(k))),
+        new Promise(r => setTimeout(r, 1000))
+      ]);
     }
-  } catch (err) { console.error('Cache delete failed:', err); }
+  } catch (err) { console.error('[hardReload] cache delete failed:', err); }
 
   // 3. 清空 sessionStorage（不動 localStorage）
   try { sessionStorage.clear(); } catch (_) {}
@@ -6507,7 +6546,6 @@ async function hardReload() {
       const eq = c.indexOf('=');
       const name = (eq > -1 ? c.slice(0, eq) : c).trim();
       if (!name) return;
-      // 多種 path / domain 組合確保清乾淨
       const expire = 'expires=Thu, 01 Jan 1970 00:00:00 GMT';
       document.cookie = `${name}=; ${expire}; path=/`;
       document.cookie = `${name}=; ${expire}; path=${location.pathname}`;
@@ -6516,20 +6554,21 @@ async function hardReload() {
     });
   } catch (_) {}
 
-  // 5. 嘗試清掉 IndexedDB（部分瀏覽器支援）
+  // 5. 嘗試清掉 IndexedDB（部分瀏覽器支援，不卡 reload）
   try {
-    if (indexedDB.databases) {
-      const dbs = await indexedDB.databases();
-      await Promise.all(dbs.map(db => new Promise(resolve => {
-        const req = indexedDB.deleteDatabase(db.name);
-        req.onsuccess = req.onerror = req.onblocked = resolve;
-      })));
+    if (indexedDB && indexedDB.databases) {
+      await Promise.race([
+        indexedDB.databases().then(dbs => Promise.all(dbs.map(db => new Promise(resolve => {
+          const req = indexedDB.deleteDatabase(db.name);
+          req.onsuccess = req.onerror = req.onblocked = resolve;
+        })))),
+        new Promise(r => setTimeout(r, 1000))
+      ]);
     }
   } catch (_) {}
 
-  // 6. 用 unique query string 破 HTTP cache + replace 避免 back/forward cache
-  const url = location.pathname + '?_=' + Date.now() + '&hr=1';
-  location.replace(url);
+  console.log('[hardReload] cleanup done — reloading');
+  forceReload();
 }
 
 // 更新 header 的版本標籤
