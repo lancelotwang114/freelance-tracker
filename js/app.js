@@ -5,7 +5,7 @@
 // ============== Data Layer ==============
 const STORAGE_KEY = 'freelance-tracker-v1';
 const CONFIG_KEY = 'freelance-tracker-config';
-const APP_VERSION = '2026-04-27-v2.10.15';  // 與 index.html 的 meta 同步
+const APP_VERSION = '2026-04-27-v2.10.16';  // 與 index.html 的 meta 同步
 
 // 版本比較（v2.10.1）
 // 修正 v2.9.7 vs v2.10.0 的字串比較 bug（'1' < '9' 字元碼，導致大版號被判舊）
@@ -5177,7 +5177,18 @@ function importData(e) {
         doneAt: j.doneAt ?? (j.done ? (j.date || todayStr()) : null),
         paidAt: j.paidAt ?? (j.paid ? (j.date || todayStr()) : null)
       }));
-      save(); renderAll(); toast('✓ 已匯入');
+      // v2.10.16: 也還原 config（我的收款資訊、提醒設定等）
+      // 但保留現有的雲端連線設定（sheetConfig / calId）以免覆蓋掉這台裝置已經設好的同步
+      if (d.config && typeof d.config === 'object') {
+        const preservedSheetConfig = config.sheetConfig;
+        const preservedCalId = config.calId;
+        config = { ...config, ...d.config };
+        if (preservedSheetConfig) config.sheetConfig = preservedSheetConfig;
+        if (preservedCalId) config.calId = preservedCalId;
+        ensurePaymentAccounts();  // 確保多筆收款帳號結構正確（migration）
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+      }
+      save(); renderAll(); toast('✓ 已匯入（含我的收款資訊與提醒設定）');
     } catch(err) {
       alert('檔案格式錯誤：' + err.message);
     }
